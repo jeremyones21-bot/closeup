@@ -47,6 +47,10 @@ struct Motion: @unchecked Sendable {
         var lastMove = 0.0
         var lastRaw = (samples.first?.x ?? 0.5, samples.first?.y ?? 0.5)
         var idx = 0
+        // Camera aim, held between zooms so zooming out doesn't swing back to the centre.
+        var aimX = 0.5, aimY = 0.5
+        var aimedAt: UUID?
+        let classics = segments.filter { $0.kind == .classic }
         var loopHint = 0
         let home = Self.cursor(at: loopStart, in: samples, hint: &loopHint)
 
@@ -74,21 +78,63 @@ struct Motion: @unchecked Sendable {
             let spanHidden = hidden.contains { t >= $0.start && t < $0.end }
             alpha.append(Float(a.step(to: idleHidden || spanHidden ? 0 : 1, time: 0.1, dt: dt)))
 
-            // Camera. Inside a classic zoom: zoom in on the cursor (or the zoom's fixed point).
-            // Inside a loupe zoom: the camera stays put and a magnifier opens at the cursor.
+            // Camera. A classic zoom eases in over up to 0.9 s and out the same way, ending exactly
+            // when the segment does. Inside it, the camera aims where the action will be (the
+            // cursor a moment ahead), then only moves when the cursor nears the edge of the view.
             let seg = segments.first { t >= $0.start && t < $0.end }
             let classic = seg?.kind == .classic ? seg : nil
-            let fast = seg?.instant == true || segments.contains { $0.instant && abs(t - $0.end) < 0.05 }
-            let zt = fast ? 0.001 : 0.32
-            let targetX = classic.map { $0.focus.map { Double($0.x) } ?? sx } ?? 0.5
-            let targetY = classic.map { $0.focus.map { Double($0.y) } ?? sy } ?? 0.5
-            zoom.append(Float(z.step(to: classic?.scale ?? 1, time: zt, dt: dt)))
-            fx.append(Float(fxs.step(to: targetX, time: fast ? 0.001 : (classic == nil ? 0.32 : 0.55), dt: dt)))
-            fy.append(Float(fys.step(to: targetY, time: fast ? 0.001 : (classic == nil ? 0.32 : 0.55), dt: dt)))
+            let level = Self.zoomLevel(at: t, classics)
+            zoom.append(Float(level))
+            if let c = classic {
+                if let f = c.focus {
+                    aimX = Double(f.x); aimY = Double(f.y)
+                } else {
+                    if aimedAt != c.id {
+                        aimedAt = c.id
+                        var h = 0
+                        let ahead = Self.cursor(at: min(c.end, c.start + Self.rampTime(c) + 0.15), in: samples, hint: &h)
+                        aimX = ahead.x; aimY = ahead.y
+                    }
+                    // Dead zone: the cursor can roam the middle of the view without moving the camera.
+                    let reach = 0.5 / c.scale * 0.55
+                    let dx = sx - aimX, dy = sy - aimY
+                    if abs(dx) > reach { aimX += dx - (dx > 0 ? reach : -reach) }
+                    if abs(dy) > reach { aimY += dy - (dy > 0 ? reach : -reach) }
+                }
+            }
+            // Fully zoomed out, the aim is invisible: jump it so the next zoom heads straight in.
+            if level < 1.01 { fxs = Spring(aimX); fys = Spring(aimY) }
+            let follow = classic?.instant == true ? 0.001 : 0.42
+            fx.append(Float(fxs.step(to: aimX, time: follow, dt: dt)))
+            fy.append(Float(fys.step(to: aimY, time: follow, dt: dt)))
+            _ = z
+            let fast = seg?.instant == true
             let isLoupe = seg?.kind == .loupe
             loupe.append(Float(lo.step(to: isLoupe ? 1 : 0, time: fast ? 0.001 : 0.18, dt: dt)))
             loupeScale.append(Float(ls.step(to: isLoupe ? (seg?.scale ?? 2) : Double(loupeScale.last ?? 2), time: 0.2, dt: dt)))
         }
+    }
+
+    /// How long a zoom takes to ease in (and out): up to 0.9 s, less for short zooms.
+    static func rampTime(_ s: ZoomSegment) -> Double {
+        s.instant ? 0 : min(0.9, max(0.15, (s.end - s.start) / 2.4))
+    }
+
+    /// Zoom amount at t from eased in/out ramps, so every zoom has the same shape and finishes on time.
+    static func zoomLevel(at t: Double, _ segs: [ZoomSegment]) -> Double {
+        var level = 1.0
+        for s in segs where t >= s.start && t < s.end {
+            let r = rampTime(s)
+            let p = r == 0 ? 1 : min(ease((t - s.start) / r), ease((s.end - t) / r))
+            level = max(level, 1 + (s.scale - 1) * p)
+        }
+        return level
+    }
+
+    /// Ease-in-out with a quick, decisive middle (cubic).
+    static func ease(_ x: Double) -> Double {
+        let u = min(1, max(0, x))
+        return u < 0.5 ? 4 * u * u * u : 1 - pow(-2 * u + 2, 3) / 2
     }
 
     func frame(at t: Double) -> Frame {
@@ -103,7 +149,10 @@ struct Motion: @unchecked Sendable {
         fr.zoomV = rate(zoom); fr.focusVX = rate(fx); fr.focusVY = rate(fy)
         fr.ripples = clicks.compactMap { c in
             let age = t - c.t
-            return age >= 0 && age < 0.5 ? (age, c.x, c.y) : nil
+            guard age >= 0 && age < 0.5 else { return nil }
+            // Where the drawn (smoothed) cursor was, so the ring sits under its tip.
+            let k = max(0, min(cx.count - 1, Int((c.t * Self.fps).rounded())))
+            return (age, Double(cx[k]), Double(cy[k]))
         }
         return fr
     }

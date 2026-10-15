@@ -51,6 +51,7 @@ final class Compositor: @unchecked Sendable {
     private let arrow: (image: CIImage, hotspot: CGPoint, pointHeight: Double)
     private let dot: CIImage
     private let ring: CIImage
+    private let clickRing: CIImage
 
     init(style: Style, motion: Motion, displayPoints: CGSize) {
         self.style = style
@@ -61,6 +62,7 @@ final class Compositor: @unchecked Sendable {
         arrow = Compositor.arrowCursor()
         dot = Compositor.circleImage(fill: .black, stroke: .white, strokeWidth: 0.16)
         ring = Compositor.circleImage(fill: nil, stroke: .white, strokeWidth: 0.08)
+        clickRing = Compositor.clickRingImage()
     }
 
     func update(style: Style, motion: Motion, scene: SceneData? = nil) {
@@ -315,19 +317,22 @@ final class Compositor: @unchecked Sendable {
         let cpos = Compositor.toCanvas(cx, cy, screen: screen)
         let pointsToCanvas = screen.height / (displayPoints.height * (scene.crop?.height ?? 1))
         if hasCursor, style.clickRipple {
-            for (age, rx, ry) in f.ripples {
+            // A quiet ring that pops out from under the cursor tip and fades: fast ease-out growth,
+            // fading as it goes. Dark core with a light rim so it reads on light and dark UI alike.
+            let duration = 0.45
+            for (age, rx, ry) in f.ripples where age < duration {
                 let (mx, my) = mapIntoCrop(rx, ry, scene.crop)
                 let p = Compositor.toCanvas(mx, my, screen: screen)
-                let u = age / 0.5
-                let d = (14 + 40 * u) * pointsToCanvas
-                let k = d / ring.extent.width
-                let r = ring.transformed(by: CGAffineTransform(translationX: -ring.extent.width / 2, y: -ring.extent.height / 2)
+                let u = age / duration
+                let grow = 1 - pow(1 - u, 3)
+                let size = style.cursorScale / 1.6
+                let d = (8 + 26 * grow) * size * pointsToCanvas
+                let alpha = 0.7 * pow(1 - u, 1.6)
+                let k = d / clickRing.extent.width
+                let r = clickRing.transformed(by: CGAffineTransform(translationX: -clickRing.extent.width / 2, y: -clickRing.extent.height / 2)
                     .concatenating(CGAffineTransform(scaleX: k, y: k))
                     .concatenating(CGAffineTransform(translationX: p.x, y: p.y)))
-                    .applyingFilter("CIColorMatrix", parameters: [
-                        "inputRVector": CIVector(x: 0.2, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 0.5, z: 0, w: 0),
-                        "inputBVector": CIVector(x: 0, y: 0, z: 1, w: 0), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0.8 * (1 - u)),
-                    ])
+                    .applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: alpha)])
                 image = r.composited(over: image)
             }
         }
@@ -378,15 +383,15 @@ final class Compositor: @unchecked Sendable {
             if style.motionBlur {
                 // Blur along fast pans and zooms, like a real camera's shutter.
                 let pan = hypot(f.focusVX * screen.width, f.focusVY * screen.height) * z / 60
-                if abs(f.zoomV) > 0.8 {
+                if abs(f.zoomV) > 1.0 {
                     let focus = Compositor.toCanvas(mapIntoCrop(f.focusX, f.focusY, scene.crop).0, mapIntoCrop(f.focusX, f.focusY, scene.crop).1, screen: screen)
                     image = image.clampedToExtent().applyingFilter("CIZoomBlur", parameters: [
                         kCIInputCenterKey: CIVector(x: (focus.x - o.x) * z, y: (focus.y - o.y) * z),
-                        kCIInputAmountKey: min(5, abs(f.zoomV) * 1.2),
+                        kCIInputAmountKey: min(1.6, (abs(f.zoomV) - 1.0) * 1.2),
                     ])
-                } else if pan > 4 {
+                } else if pan > 8 {
                     image = image.clampedToExtent().applyingFilter("CIMotionBlur", parameters: [
-                        kCIInputRadiusKey: min(10, pan * 0.3), kCIInputAngleKey: atan2(-f.focusVY * screen.height, f.focusVX * screen.width),
+                        kCIInputRadiusKey: min(4, (pan - 8) * 0.15), kCIInputAngleKey: atan2(-f.focusVY * screen.height, f.focusVX * screen.width),
                     ])
                 }
             }
@@ -452,7 +457,7 @@ final class Compositor: @unchecked Sendable {
 
     private func cursorImage(style: Style, press: Double, pointsToCanvas: Double, at p: CGPoint) -> CIImage {
         var scale = style.cursorScale
-        if style.clickEffect { scale *= 1 - 0.2 * press }
+        if style.clickEffect { scale *= 1 - 0.14 * press }
         switch style.cursorStyle {
         case .arrow:
             let k = arrow.pointHeight * pointsToCanvas * scale / arrow.image.extent.height
@@ -703,13 +708,6 @@ final class Compositor: @unchecked Sendable {
             g.color1 = CIColor(red: bottom.0, green: bottom.1, blue: bottom.2)
             bg = g.outputImage!
             // Debanding: a whisper of noise breaks up the steps an 8-bit gradient would show.
-            let noise = CIFilter.randomGenerator().outputImage!
-                .applyingFilter("CIColorMatrix", parameters: [
-                    "inputRVector": CIVector(x: 0.012, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: 0.012, z: 0, w: 0),
-                    "inputBVector": CIVector(x: 0, y: 0, z: 0.012, w: 0), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
-                    "inputBiasVector": CIVector(x: -0.006, y: -0.006, z: -0.006, w: 1),
-                ])
-            bg = noise.applyingFilter("CIAdditionCompositing", parameters: [kCIInputBackgroundImageKey: bg])
         }
         bg = bg.cropped(to: bounds)
 
@@ -744,7 +742,10 @@ final class Compositor: @unchecked Sendable {
 
         // Flatten to a bitmap so the blur isn't recomputed every frame.
         var out = bg
-        if let cg = context.createCGImage(bg, from: bounds) { out = CIImage(cgImage: cg) }
+        // 16 bits per channel, so a smooth gradient stays smooth without adding noise.
+        if let cg = context.createCGImage(bg, from: bounds, format: .RGBA16, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)) {
+            out = CIImage(cgImage: cg)
+        }
         lock.lock()
         backdropCache = (key, out)
         lock.unlock()
@@ -757,6 +758,27 @@ final class Compositor: @unchecked Sendable {
         g.radius = Float(max(0, min(radius, min(r.width, r.height) / 2)))
         g.color = color
         return g.outputImage!
+    }
+
+    /// The click ring: a soft dark band with thin light edges and a faint fill.
+    static func clickRingImage() -> CIImage {
+        let size = 256.0
+        let img = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
+            let outer = NSRect(x: 6, y: 6, width: size - 12, height: size - 12)
+            NSColor(white: 0.1, alpha: 0.12).setFill()
+            NSBezierPath(ovalIn: outer).fill()
+            let band = NSBezierPath(ovalIn: outer.insetBy(dx: 10, dy: 10))
+            band.lineWidth = 16
+            NSColor(white: 1, alpha: 0.9).setStroke()
+            band.lineWidth = 30
+            band.stroke()
+            NSColor(white: 0.12, alpha: 0.8).setStroke()
+            band.lineWidth = 20
+            band.stroke()
+            return true
+        }
+        var r = CGRect(x: 0, y: 0, width: size, height: size)
+        return CIImage(cgImage: img.cgImage(forProposedRect: &r, context: nil, hints: nil)!)
     }
 
     static func circleImage(fill: NSColor?, stroke: NSColor, strokeWidth: Double) -> CIImage {
