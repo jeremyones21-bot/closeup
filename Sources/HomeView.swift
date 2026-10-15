@@ -23,7 +23,7 @@ struct HomeView: View {
                     .disabled(app.phase != .idle)
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                 }
-                Text("Choose a display, window or area in the bar that appears, then press Record. Click the timer in the menu bar to stop.")
+                Text("Pick a display, window, area or device in the bar that appears, then Start recording. Finish with the floating controls or \(Hotkeys.shared.label(.startStop)).")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
@@ -60,7 +60,8 @@ struct HomeView: View {
 
             if app.projects.isEmpty {
                 ContentUnavailableView("No Recordings Yet", systemImage: "rectangle.dashed.badge.record",
-                                       description: Text("Recordings are saved in Movies › Closeup."))
+                                       description: Text("Recordings are saved in \(ProjectFolder.root.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))."))
+                    .frame(maxHeight: .infinity)
             } else {
                 List(selection: $selection) {
                     Section {
@@ -112,6 +113,8 @@ struct HomeView: View {
                 .padding(.vertical, 8)
             }
         }
+        // Keep the header pinned to the top; the list or empty state fills the rest.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: app.projects) {
             selection.formIntersection(app.projects.map(\.url))
         }
