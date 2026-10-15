@@ -180,7 +180,7 @@ struct Style: Codable, Equatable {
     var cameraShape: CameraShape = .circle
     var cameraMirror = true
     var cursorStyle: CursorStyle = .arrow
-    var clickRipple = true
+    var clickRipple = false   // Screen Studio's default click is a cursor squash, no ring
     var clickSound = false
     var motionBlur = true
     var loopCursor = false

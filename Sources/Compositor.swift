@@ -383,15 +383,15 @@ final class Compositor: @unchecked Sendable {
             if style.motionBlur {
                 // Blur along fast pans and zooms, like a real camera's shutter.
                 let pan = hypot(f.focusVX * screen.width, f.focusVY * screen.height) * z / 60
-                if abs(f.zoomV) > 1.0 {
+                if abs(f.zoomV) > 1.2 {
                     let focus = Compositor.toCanvas(mapIntoCrop(f.focusX, f.focusY, scene.crop).0, mapIntoCrop(f.focusX, f.focusY, scene.crop).1, screen: screen)
                     image = image.clampedToExtent().applyingFilter("CIZoomBlur", parameters: [
                         kCIInputCenterKey: CIVector(x: (focus.x - o.x) * z, y: (focus.y - o.y) * z),
-                        kCIInputAmountKey: min(1.6, (abs(f.zoomV) - 1.0) * 1.2),
+                        kCIInputAmountKey: min(8, (abs(f.zoomV) - 1.2) * 2.0),
                     ])
-                } else if pan > 8 {
+                } else if pan > 3 {
                     image = image.clampedToExtent().applyingFilter("CIMotionBlur", parameters: [
-                        kCIInputRadiusKey: min(4, (pan - 8) * 0.15), kCIInputAngleKey: atan2(-f.focusVY * screen.height, f.focusVX * screen.width),
+                        kCIInputRadiusKey: min(26, (pan - 3) * 0.5), kCIInputAngleKey: atan2(-f.focusVY * screen.height, f.focusVX * screen.width),
                     ])
                 }
             }
@@ -457,7 +457,7 @@ final class Compositor: @unchecked Sendable {
 
     private func cursorImage(style: Style, press: Double, pointsToCanvas: Double, at p: CGPoint) -> CIImage {
         var scale = style.cursorScale
-        if style.clickEffect { scale *= 1 - 0.14 * press }
+        if style.clickEffect { scale *= 1 - 0.18 * press }
         switch style.cursorStyle {
         case .arrow:
             let k = arrow.pointHeight * pointsToCanvas * scale / arrow.image.extent.height

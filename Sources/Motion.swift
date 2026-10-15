@@ -73,7 +73,7 @@ struct Motion: @unchecked Sendable {
             let sx = style.cursorSmoothing <= 0.001 ? raw.x : x.step(to: raw.x, time: cursorTime, dt: dt)
             let sy = style.cursorSmoothing <= 0.001 ? raw.y : y.step(to: raw.y, time: cursorTime, dt: dt)
             cx.append(Float(sx)); cy.append(Float(sy))
-            press.append(Float(p.step(to: raw.down ? 1 : 0, time: 0.045, dt: dt)))
+            press.append(Float(p.step(to: raw.down ? 1 : 0, time: raw.down ? 0.025 : 0.07, dt: dt)))   // snap down, ease back
             let idleHidden = style.hideIdleCursor && t - lastMove > 2.5
             let spanHidden = hidden.contains { t >= $0.start && t < $0.end }
             alpha.append(Float(a.step(to: idleHidden || spanHidden ? 0 : 1, time: 0.1, dt: dt)))
@@ -104,7 +104,7 @@ struct Motion: @unchecked Sendable {
             }
             // Fully zoomed out, the aim is invisible: jump it so the next zoom heads straight in.
             if level < 1.01 { fxs = Spring(aimX); fys = Spring(aimY) }
-            let follow = classic?.instant == true ? 0.001 : 0.42
+            let follow = classic?.instant == true ? 0.001 : 0.16
             fx.append(Float(fxs.step(to: aimX, time: follow, dt: dt)))
             fy.append(Float(fys.step(to: aimY, time: follow, dt: dt)))
             _ = z
@@ -115,27 +115,36 @@ struct Motion: @unchecked Sendable {
         }
     }
 
-    /// How long a zoom takes to ease in (and out): up to 0.9 s, less for short zooms.
+    /// How long a zoom takes to land: about half a second, measured from Screen Studio's own demo
+    /// (a frame of lead-in, most of the move in the next ~0.1 s, then a soft settle).
     static func rampTime(_ s: ZoomSegment) -> Double {
-        s.instant ? 0 : min(0.9, max(0.15, (s.end - s.start) / 2.4))
+        s.instant ? 0 : min(0.5, max(0.15, (s.end - s.start) / 2.2))
     }
 
-    /// Zoom amount at t from eased in/out ramps, so every zoom has the same shape and finishes on time.
+    /// Zoom amount at t. Each zoom springs in from its start and springs back out so it's fully out
+    /// at its end, with the same fast-then-settle shape both ways.
     static func zoomLevel(at t: Double, _ segs: [ZoomSegment]) -> Double {
         var level = 1.0
         for s in segs where t >= s.start && t < s.end {
             let r = rampTime(s)
-            let p = r == 0 ? 1 : min(ease((t - s.start) / r), ease((s.end - t) / r))
+            // In: spring from the start. Out: the same spring run forward from (end − r), so it
+            // leaves quickly and lands softly on the full view right at the end.
+            let p = r == 0 ? 1 : min(snap((t - s.start) / r), 1 - snap((t - (s.end - r)) / r))
             level = max(level, 1 + (s.scale - 1) * p)
         }
         return level
     }
 
-    /// Ease-in-out with a quick, decisive middle (cubic).
-    static func ease(_ x: Double) -> Double {
+    /// Critically damped spring from rest, normalised to reach exactly 1 at x = 1: a barely-there
+    /// start, a fast middle, and a long gentle landing. This is the "camera operator" feel.
+    static func snap(_ x: Double) -> Double {
         let u = min(1, max(0, x))
-        return u < 0.5 ? 4 * u * u * u : 1 - pow(-2 * u + 2, 3) / 2
+        let w = 7.0
+        func f(_ v: Double) -> Double { 1 - (1 + w * v) * exp(-w * v) }
+        return f(u) / f(1)
     }
+
+    static func ease(_ x: Double) -> Double { snap(x) }
 
     func frame(at t: Double) -> Frame {
         let f = max(0, min(Double(cx.count - 1), t * Self.fps))
