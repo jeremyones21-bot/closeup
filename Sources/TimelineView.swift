@@ -66,6 +66,16 @@ struct TimelineView: View {
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { v in model.seek(to: time(v.location.x)) })
 
+            // Flags marked while recording.
+            ForEach(Array(model.flags.enumerated()), id: \.offset) { _, f in
+                Image(systemName: "flag.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .offset(x: x(f) - 2, y: 12)
+                    .help("Flag at \(timecode(f))")
+                    .onTapGesture { model.seek(to: f) }
+            }
+
             trimHandle(at: x(model.edits.trimStart), leading: true)
                 .gesture(DragGesture(coordinateSpace: .named("tl")).onChanged { v in
                     model.edits.trimStart = min(time(v.location.x), model.trimEnd - 0.5)

@@ -16,6 +16,8 @@ final class Compositor: @unchecked Sendable {
     private let displayPoints: CGSize      // the recorded display, in points
     private var backdropCache: (key: String, image: CIImage)?
     private var wallpaper: CIImage?
+    private var device: String?              // iPhone / iPad recordings get a device frame
+    private var hasCursor = true              // imported videos and device recordings have none
 
     private let cursorImage: CIImage
     private let cursorHotspot: CGPoint       // pixels in cursorImage, CI (bottom-left) origin
@@ -32,6 +34,22 @@ final class Compositor: @unchecked Sendable {
         cursorImage = cursor.image
         cursorHotspot = cursor.hotspot
         cursorPointHeight = cursor.pointHeight
+    }
+
+    func setDevice(_ name: String?, hasCursor: Bool) {
+        lock.lock()
+        device = name
+        self.hasCursor = hasCursor
+        backdropCache = nil
+        lock.unlock()
+    }
+
+    private var isPad: Bool { device?.localizedCaseInsensitiveContains("ipad") ?? false }
+
+    /// Device screens have their own, much rounder corners.
+    private func screenRadius(_ style: Style, screen: CGRect, short: Double) -> Double {
+        guard device != nil else { return style.corner * short }
+        return screen.width * (isPad ? 0.035 : 0.12)
     }
 
     func update(style: Style, motion: Motion) {
@@ -53,12 +71,14 @@ final class Compositor: @unchecked Sendable {
 
     func compose(source: CIImage, camera: CIImage? = nil, time: Double, canvas: CGSize) -> CIImage {
         lock.lock()
-        let style = self.style, motion = self.motion
+        let style = self.style, motion = self.motion, device = self.device, hasCursor = self.hasCursor
         lock.unlock()
 
         let W = canvas.width, H = canvas.height, short = min(W, H)
         let src = source.extent
-        let screen = Compositor.screenRect(source: src.size, canvas: canvas, padding: style.padding)
+        // A device frame needs room around the screen for its bezel.
+        let padding = device == nil ? style.padding : max(style.padding, 0.08)
+        let screen = Compositor.screenRect(source: src.size, canvas: canvas, padding: padding)
         let s = screen.width / src.width
 
         // Backdrop + shadow never change between frames, so render them once per look.
@@ -70,7 +90,7 @@ final class Compositor: @unchecked Sendable {
                 .concatenating(CGAffineTransform(scaleX: s, y: s))
                 .concatenating(CGAffineTransform(translationX: screen.minX, y: screen.minY)))
         var image: CIImage
-        let radius = style.corner * short
+        let radius = screenRadius(style, screen: screen, short: short)
         if radius > 0.5 {
             let mask = Compositor.roundedRect(screen, radius: radius, color: .white)
             image = placed.applyingFilter("CIBlendWithAlphaMask", parameters: [
@@ -84,7 +104,7 @@ final class Compositor: @unchecked Sendable {
         let f = motion.frame(at: time)
 
         // Cursor, drawn in screen space so it zooms with everything else.
-        if f.cursorAlpha > 0.01 {
+        if hasCursor, f.cursorAlpha > 0.01 {
             let px = screen.minX + f.cursorX * screen.width
             let py = screen.maxY - f.cursorY * screen.height
             let pointsToCanvas = screen.height / displayPoints.height
@@ -163,7 +183,7 @@ final class Compositor: @unchecked Sendable {
     // MARK: Pieces
 
     private func backdrop(style: Style, canvas: CGSize, screen: CGRect) -> CIImage {
-        let key = "\(style.backdrop.rawValue)|\(canvas)|\(screen)|\(style.corner)|\(style.shadow)"
+        let key = "\(style.backdrop.rawValue)|\(canvas)|\(screen)|\(style.corner)|\(style.shadow)|\(device ?? "")"
         lock.lock()
         if let c = backdropCache, c.key == key { lock.unlock(); return c.image }
         let wall = wallpaper
@@ -190,10 +210,22 @@ final class Compositor: @unchecked Sendable {
 
         if style.shadow > 0.01 {
             let blur = 0.03 * short
-            let shadow = Compositor.roundedRect(screen, radius: style.corner * short, color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.55 * style.shadow))
+            let shadow = Compositor.roundedRect(device == nil ? screen : screen.insetBy(dx: -screen.width * 0.05, dy: -screen.width * 0.05),
+                                                radius: screenRadius(style, screen: screen, short: short), color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.55 * style.shadow))
                 .applyingGaussianBlur(sigma: blur / 2)
                 .transformed(by: CGAffineTransform(translationX: 0, y: -0.012 * short))
             bg = shadow.composited(over: bg).cropped(to: bounds)
+        }
+
+        // iPhone / iPad: a dark bezel around the screen, drawn into the static backdrop.
+        if device != nil {
+            let bezel = screen.width * (isPad ? 0.045 : 0.055)
+            let frame = screen.insetBy(dx: -bezel, dy: -bezel)
+            let r = screenRadius(style, screen: screen, short: short) + bezel
+            let edge = Compositor.roundedRect(frame, radius: r, color: CIColor(red: 0.32, green: 0.33, blue: 0.35))
+            let body = Compositor.roundedRect(frame.insetBy(dx: bezel * 0.08, dy: bezel * 0.08), radius: r - bezel * 0.08,
+                                              color: CIColor(red: 0.05, green: 0.05, blue: 0.06))
+            bg = body.composited(over: edge.composited(over: bg)).cropped(to: bounds)
         }
 
         // Flatten to a bitmap so the blur isn't recomputed every frame.
@@ -295,11 +327,11 @@ enum Render {
         return Source(asset: comp, screenTrack: st.trackID, cameraTrack: cameraTrack, duration: duration.seconds)
     }
 
-    static func composition(source: Source, compositor: Compositor, canvas: CGSize) -> AVVideoComposition {
+    static func composition(source: Source, compositor: Compositor, canvas: CGSize, fps: Int = 60) -> AVVideoComposition {
         let comp = AVMutableVideoComposition()
         comp.customVideoCompositorClass = CloseupVideoCompositor.self
         comp.renderSize = canvas
-        comp.frameDuration = CMTime(value: 1, timescale: 60)
+        comp.frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
         // Without this, output frames follow the recording's frame times. ScreenCaptureKit only
         // sends frames when the screen changes, so zooms would stutter over still moments.
         comp.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid

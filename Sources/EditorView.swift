@@ -156,18 +156,40 @@ func timecode(_ t: Double) -> String {
 struct ExportSheet: View {
     @Bindable var model: EditorModel
     @Environment(\.dismiss) private var dismiss
-    @State private var resolution = EditorModel.Resolution.p1080
-    @State private var codec = Render.Codec.h264
+    @State private var resolution = EditorModel.Resolution(rawValue: Prefs.shared.exportResolution) ?? .p1080
+    @State private var format = Prefs.shared.exportFormat
+    @State private var fps = Prefs.shared.exportFPS
+    @State private var compression = Prefs.shared.compression
+    @State private var hevc = false
+
+    private var settings: Exporter.Settings {
+        Exporter.Settings(format: format, fps: fps, compression: compression, hevc: hevc, variableFrameRate: Prefs.shared.variableFrameRate)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Export").font(.headline)
             Form {
-                Picker("Resolution", selection: $resolution) {
-                    ForEach(EditorModel.Resolution.allCases) { Text($0.label).tag($0) }
+                Picker("Format", selection: $format) {
+                    ForEach(Prefs.ExportFormat.allCases) { Text($0.label).tag($0) }
                 }
-                Picker("Format", selection: $codec) {
-                    ForEach(Render.Codec.allCases) { Text($0.label).tag($0) }
+                .pickerStyle(.segmented)
+                Picker("Resolution", selection: $resolution) {
+                    ForEach(EditorModel.Resolution.allCases) { r in
+                        Text(r.label).tag(r).disabled(format == .gif && r.rawValue > 1080)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Picker("Frame rate", selection: $fps) {
+                    Text("24 fps").tag(24); Text("30 fps").tag(30); Text("60 fps").tag(60)
+                }
+                if format == .mp4 {
+                    Picker("Compression", selection: $compression) {
+                        ForEach(Prefs.Compression.allCases) { Text($0.label).tag($0) }
+                    }
+                    Toggle("HEVC (smaller files, newer devices)", isOn: $hevc)
+                } else {
+                    Text("GIFs are capped at 1080p and 30 fps.").font(.callout).foregroundStyle(.secondary)
                 }
                 LabeledContent("Length", value: timecode(model.trimEnd - model.edits.trimStart))
             }
@@ -193,22 +215,35 @@ struct ExportSheet: View {
                 Button(model.exportedURL == nil ? "Cancel" : "Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(model.exporting)
+                Button("Copy to Clipboard") { copy() }
+                    .disabled(model.exporting)
                 Button("Export…") { choose() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.exporting)
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 460)
         .onAppear { model.exportedURL = nil; model.exportError = nil }
+        .onChange(of: format) { if format == .gif && resolution.rawValue > 1080 { resolution = .p1080 } }
     }
+
+    private var ext: String { format == .gif ? "gif" : "mp4" }
 
     private func choose() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = model.project.name + ".mp4"
+        panel.allowedContentTypes = [format == .gif ? .gif : .mpeg4Movie]
+        panel.nameFieldStringValue = model.project.name + "." + ext
         panel.directoryURL = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await model.export(resolution: resolution, codec: codec, to: url) }
+        Task { await model.export(resolution: resolution, settings: settings, to: url) }
+    }
+
+    private func copy() {
+        let url = QuickExport.clipboardFolder.appendingPathComponent(model.project.name + "." + ext)
+        Task {
+            await model.export(resolution: resolution, settings: settings, to: url)
+            if model.exportError == nil { QuickExport.copyToClipboard(url) }
+        }
     }
 }

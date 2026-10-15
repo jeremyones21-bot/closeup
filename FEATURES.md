@@ -11,19 +11,44 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 - [x] Webcam recording (separate track, lined up by host clock)
 - [x] Microphone recording (choose which mic)
 - [x] System audio ("Mac sound")
-- [ ] Per-app audio (choose which apps' sound is recorded)
-- [ ] Pause and resume
+- [x] Per-app audio (choose which apps' sound is recorded)
+- [x] Pause and resume
 - [x] Countdown (3 s, in the menu bar)
-- [ ] Global start/stop shortcut
-- [ ] Resize the recorded window to an exact size
-- [ ] Speaker notes (floating, never recorded)
-- [ ] Hide desktop icons (left out of the capture, Finder untouched)
-- [ ] Hide the Dock icon while recording
-- [ ] Autosave every 2 s and crash recovery
-- [ ] Recording flags (mark a moment while recording)
-- [ ] New-recording defaults (style applied to new projects)
-- [ ] iPhone / iPad over USB with device frame
+- [x] Global start/stop shortcut
+- [x] Resize the recorded window to an exact size
+- [x] Speaker notes (floating, never recorded)
+- [x] Hide desktop icons (left out of the capture, Finder untouched)
+- [x] Hide the Dock icon while recording
+- [x] Autosave every 2 s and crash recovery
+- [x] Recording flags (mark a moment while recording)
+- [x] New-recording defaults (style applied to new projects)
+- [x] iPhone / iPad over USB with device frame
 - [ ] Create a project from an existing video
+
+### Seen in Screen Studio's own screens
+- [x] Recording bar: Display / Window / Area / Device, camera, microphone, Mac sound, options
+- [x] Device mode in the bar
+- [x] Folder button (open the recordings window)
+- [x] Pick a display or window by hovering it on screen, with "Start recording ▾"
+- [x] After-recording action: open project / export and copy / export and save to file
+- [x] "Automatically create zooms" switch
+- [x] Recording widget during capture (finish, pause, restart, cancel)
+- [x] Restart recording
+- [x] Dim everything outside the recorded area while recording
+- [x] Prompter (auto-scrolling speaker notes)
+- [x] Welcome screen that asks for permissions
+- [x] Settings window: General, Recording, Editing, Quick export, Shortcuts, Advanced
+- [x] Start at login
+- [x] Choose where projects are saved
+- [x] Maximum camera resolution (720p / 1080p / 4K)
+- [x] Use last project's settings for new recordings
+- [x] Quick export: format, frame rate, resolution, compression (Studio / Social / Web / Web Low)
+- [x] Quick-export widget after recording
+- [x] Editable shortcuts (their defaults: ⌃⌘↩ start/finish, ⌥⌘P pause, ⌥⌘⌫ restart, ⌃⌥⌘F flag, ⌥⌘3/4/5 display/window/area, ⌥⌘/ notes, ⌥⌘. prompter, ⌥⌘' controls)
+- [ ] Super resolution setting (Off / Fast / Quality): the setting exists, the MetalFX upscaling behind it is still to do
+- [x] Variable frame rate export (smaller files for static screens)
+- [-] Usage data: Closeup collects none, so there's no switch
+- [-] Licensing, network certificate and diagnostics upload options: Closeup has no server
 
 ## 2. Zoom and focus
 - [x] Automatic zoom from clicks
@@ -109,8 +134,8 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 - [x] Padding
 - [ ] Shadow angle, distance and softness (strength is done)
 - [ ] Inset (frame around the recording)
-- [ ] Presets (save / apply)
-- [ ] Preset sharing (export / import a file)
+- [x] Presets (save / apply)
+- [x] Preset sharing (export / import a file)
 - [ ] Debanding (dither gradients)
 
 ## 9. Privacy
@@ -123,19 +148,19 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 
 ## 10. Export
 - [x] MP4 (H.264 / HEVC), hardware encoded
-- [ ] GIF export (up to 1080p)
-- [ ] 720p option (1080p, 1440p, 4K are done)
+- [x] GIF export (up to 1080p)
+- [x] 720p option (1080p, 1440p, 4K are done)
 - [x] 60 fps
-- [ ] Frame rate choice (30 / 60)
-- [ ] Quality / compression control
+- [x] Frame rate choice (30 / 60)
+- [x] Quality / compression control
 - [x] Export to a file
-- [ ] Copy exported video to the clipboard
+- [x] Copy exported video to the clipboard
 
 ## 11. Sharing
 - [-] Share links, private links, timestamped comments, view counts: need a hosting server. Can be built on your Vercel account later, but only with your OK before anything is published.
 - [ ] Project sharing / download: export the .closeup folder as one file and open it on another Mac
-- [ ] Copy to clipboard
+- [x] Copy to clipboard
 
 ## 12. Mac
 - [x] Native, Apple Silicon, ScreenCaptureKit, hardware encoding
-- [ ] Settings window and shortcut list
+- [x] Settings window and shortcut list

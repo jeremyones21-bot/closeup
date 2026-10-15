@@ -30,9 +30,27 @@ struct CloseupApp: App {
                 EditorView(project: ProjectFolder(url: url))
                     .environment(app)
                     .frame(minWidth: 980, minHeight: 620)
+                    .onAppear { app.editorsOpen += 1 }
+                    .onDisappear { app.editorsOpen -= 1 }
             }
         }
         .defaultSize(width: 1280, height: 820)
+
+        Window("Welcome to Closeup", id: "welcome") {
+            WelcomeView().environment(app)
+        }
+        .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
+
+        Settings {
+            SettingsView()
+        }
+
+        MenuBarExtra {
+            MenuBarContent().environment(app)
+        } label: {
+            MenuBarLabel().environment(app)
+        }
     }
 }
 
@@ -44,7 +62,7 @@ final class AppState {
 
     enum Phase: Equatable { case idle, countdown(Int), recording, saving }
     enum SourceMode: String, CaseIterable, Identifiable {
-        case display, window, area
+        case display, window, area, device
         var id: String { rawValue }
         var label: String { rawValue.capitalized }
         var symbol: String {
@@ -52,6 +70,7 @@ final class AppState {
             case .display: "display"
             case .window: "macwindow"
             case .area: "rectangle.dashed"
+            case .device: "iphone"
             }
         }
     }
@@ -104,9 +123,14 @@ final class AppState {
     }
     var paused = false
     var recovered: [String] = []
+    var phones: [Device] = []
+    var phoneID: String?
+    var editorsOpen = 0 { didSet { updateDockIcon() } }
 
-    /// Set by a view that has the openWindow action.
+    /// Set by a view that has the openWindow action (the menu bar icon, which always exists).
     var openEditor: ((URL) -> Void)?
+    var openHome: (() -> Void)?
+    var openWelcome: (() -> Void)?
 
     let bar = RecordBarController()
     private var recorder: Recorder?
@@ -119,7 +143,22 @@ final class AppState {
         case .display: !displays.isEmpty
         case .window: windowID != nil
         case .area: area != nil
+        case .device: phoneID != nil
         }
+    }
+
+    func elapsedText(_ now: Date) -> String {
+        let s = Int(now.timeIntervalSince(started) - pausedSeconds)
+        return String(format: "%d:%02d", max(0, s) / 60, max(0, s) % 60)
+    }
+    private var pausedSeconds = 0.0
+    private var pausedAt: Date?
+
+    /// With "Hide Dock icon" on, the icon only shows while an editor is open.
+    func updateDockIcon() {
+        guard phase == .idle else { return }
+        let hide = Prefs.shared.hideDockIconWhenIdle && editorsOpen <= 0
+        NSApp.setActivationPolicy(hide ? .accessory : .regular)
     }
 
     func refresh() {
@@ -127,6 +166,8 @@ final class AppState {
         projects = ProjectFolder.all()
         cameras = CameraRecorder.devices().map { Device(id: $0.uniqueID, name: $0.localizedName) }
         microphones = Recorder.microphones().map { Device(id: $0.uniqueID, name: $0.localizedName) }
+        phones = DeviceRecorder.devices().map { Device(id: $0.uniqueID, name: $0.localizedName) }
+        if phoneID == nil || !phones.contains(where: { $0.id == phoneID }) { phoneID = phones.first?.id }
         if let id = cameraID, !cameras.contains(where: { $0.id == id }) { cameraID = nil }
         if let id = microphoneID, !microphones.contains(where: { $0.id == id }) { microphoneID = nil }
         Task {
@@ -163,11 +204,52 @@ final class AppState {
         guard phase == .idle else { return }
         refresh()
         bar.show(app: self)
+        ScreenPicker.shared.show(mode: mode)
+    }
+
+    func hideBar() {
+        bar.hide()
+        ScreenPicker.shared.hide()
+    }
+
+    /// Called when the bar's mode changes, so the on-screen picker matches.
+    func modeChanged() {
+        if bar.isVisible { ScreenPicker.shared.show(mode: mode) }
+        if mode == .device { refresh() }
+    }
+
+    func shortcut(_ a: ShortcutAction) {
+        switch a {
+        case .startStop:
+            switch phase {
+            case .idle: bar.isVisible ? startRecording() : showBar()
+            case .countdown, .recording: Task { await stopRecording() }
+            case .saving: break
+            }
+        case .pause: togglePause()
+        case .restart: restartRecording()
+        case .flag: addFlag()
+        case .recordDisplay:
+            guard phase == .idle else { return }
+            mode = .display
+            startRecording()
+        case .recordWindow:
+            guard phase == .idle else { return }
+            mode = .window
+            showBar()
+        case .recordArea:
+            guard phase == .idle else { return }
+            mode = .area
+            selectArea()
+        case .notes: SpeakerNotes.shared.toggle()
+        case .prompter: SpeakerNotes.shared.togglePrompter()
+        case .controls: if phase == .recording { RecordingWidget.shared.toggle() } else if phase == .idle { bar.isVisible ? hideBar() : showBar() }
+        }
     }
 
     func selectArea() {
         let id = area?.display ?? displayID
-        bar.hide()
+        hideBar()
         AreaSelector.shared.begin(display: id, initial: area?.display == id ? area?.rect : nil) { [weak self] result in
             guard let self else { return }
             if let result { self.area = result; self.mode = .area }
@@ -197,7 +279,7 @@ final class AppState {
     }
 
     private func beginCountdown() {
-        bar.hide()
+        hideBar()
         showStatusItem()
         if hideDockIcon { NSApp.setActivationPolicy(.accessory) }
         NSApp.hide(nil)
@@ -233,7 +315,14 @@ final class AppState {
 
     func togglePause() {
         guard phase == .recording, let recorder else { return }
-        if paused { recorder.resume() } else { recorder.pause() }
+        if paused {
+            recorder.resume()
+            if let p = pausedAt { pausedSeconds += Date().timeIntervalSince(p) }
+            pausedAt = nil
+        } else {
+            recorder.pause()
+            pausedAt = .now
+        }
         paused.toggle()
         updateStatus()
     }
@@ -252,6 +341,17 @@ final class AppState {
         case .idle: startRecording()
         case .countdown, .recording: Task { await stopRecording() }
         case .saving: break
+        }
+    }
+
+    /// Throws the current take away and starts a fresh one with the same setup.
+    func restartRecording() {
+        guard phase == .recording else { return }
+        Task {
+            await stopRecording(openEditor: false, keepUI: true)
+            if let p = projects.first { delete(p); lastTrashed = [] }
+            phase = .idle
+            beginCountdown()
         }
     }
 
@@ -292,6 +392,7 @@ final class AppState {
         case .display: target = .display(displayID)
         case .window: target = .window(windowID ?? 0)
         case .area: target = .area(area?.display ?? displayID, area?.rect ?? .zero)
+        case .device: target = .device(phoneID ?? "", name: phones.first { $0.id == phoneID }?.name ?? "iPhone")
         }
         do {
             try await rec.start(CaptureOptions(target: target, microphoneID: microphoneID, systemAudio: systemAudio,
@@ -300,9 +401,14 @@ final class AppState {
             if SpeakerNotes.shared.isVisible { SpeakerNotes.shared.show() }
             recorder = rec
             started = .now
+            pausedSeconds = 0
             paused = false
             flagCount = 0
             phase = .recording
+            if Prefs.shared.showRecordingWidget { RecordingWidget.shared.show() }
+            if Prefs.shared.highlightRecordedArea, !rec.isDevice {
+                RegionDimmer.shared.show { [weak rec] in rec?.liveRegion }
+            }
             ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.updateStatus() }
             }
@@ -312,7 +418,9 @@ final class AppState {
         }
     }
 
-    func stopRecording(openEditor shouldOpen: Bool = true) async {
+    func stopRecording(openEditor shouldOpen: Bool = true, keepUI: Bool = false) async {
+        RecordingWidget.shared.hide()
+        RegionDimmer.shared.hide()
         switch phase {
         case .countdown:
             phase = .idle
@@ -331,21 +439,39 @@ final class AppState {
         do {
             let project = try await recorder!.stop()
             recorder = nil
-            phase = .idle
             paused = false
+            if keepUI { return }
+            phase = .idle
             removeStatusItem()
             projects = ProjectFolder.all()
             NSApp.setActivationPolicy(.regular)
             NSApp.unhide(nil)
-            NSApp.activate()
-            if shouldOpen { openEditor?(project.url) }
+            if shouldOpen { finished(project) }
         } catch {
             recorder = nil
             fail(error)
         }
     }
 
+    /// What to do with a finished take: Settings › Recording › After recording.
+    private func finished(_ project: ProjectFolder) {
+        if Prefs.shared.showQuickExportWidget {
+            QuickExportWidget.shared.show(project: project)
+            return
+        }
+        switch Prefs.shared.afterRecording {
+        case .openProject:
+            NSApp.activate()
+            openEditor?(project.url)
+        case .exportCopy, .exportSave:
+            let copy = Prefs.shared.afterRecording == .exportCopy
+            QuickExportWidget.shared.show(project: project, autoStart: copy ? .copy : .save)
+        }
+    }
+
     private func fail(_ error: Error) {
+        RecordingWidget.shared.hide()
+        RegionDimmer.shared.hide()
         phase = .idle
         paused = false
         removeStatusItem()
@@ -405,9 +531,9 @@ final class AppState {
         case .countdown:
             menu.addItem(ClosureMenuItem("Cancel") { [weak self] in Task { await self?.stopRecording() } })
         case .recording:
-            menu.addItem(ClosureMenuItem("Stop Recording", key: Hotkeys.startStop.label) { [weak self] in Task { await self?.stopRecording() } })
-            menu.addItem(ClosureMenuItem(paused ? "Resume" : "Pause", key: Hotkeys.pause.label) { [weak self] in self?.togglePause() })
-            menu.addItem(ClosureMenuItem("Add Flag", key: Hotkeys.flag.label) { [weak self] in self?.addFlag() })
+            menu.addItem(ClosureMenuItem("Stop Recording", key: Hotkeys.shared.label(.startStop)) { [weak self] in Task { await self?.stopRecording() } })
+            menu.addItem(ClosureMenuItem(paused ? "Resume" : "Pause", key: Hotkeys.shared.label(.pause)) { [weak self] in self?.togglePause() })
+            menu.addItem(ClosureMenuItem("Add Flag", key: Hotkeys.shared.label(.flag)) { [weak self] in self?.addFlag() })
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(SpeakerNotes.shared.isVisible ? "Hide Speaker Notes" : "Show Speaker Notes") {
                 SpeakerNotes.shared.toggle()
@@ -451,9 +577,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pending: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Hotkeys.shared.install(startStop: { AppState.shared.hotkeyStartStop() },
-                               pause: { AppState.shared.togglePause() },
-                               flag: { AppState.shared.addFlag() })
+        Hotkeys.shared.perform = { AppState.shared.shortcut($0) }
+        Hotkeys.shared.reload()
         // URLs can arrive before any window exists; replay once the home window has registered.
         Task {
             for _ in 0..<50 where AppState.shared.openEditor == nil { try? await Task.sleep(for: .milliseconds(100)) }

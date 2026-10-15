@@ -16,6 +16,20 @@ final class EditorModel {
     var clicks: [Double] = []
     var selected: UUID?
     var hasCamera = false
+    var isDevice = false
+    var flags: [Double] = []
+
+    /// The starting look and zooms for a project opened for the first time.
+    static func initialEdits(samples: [CursorSample], duration: Double, device: String?) -> Edits {
+        var e = Edits()
+        let prefs = Prefs.shared
+        if let preset = PresetStore.defaultPreset() { e.style = preset.style }
+        else if prefs.useLastProjectSettings, let last = prefs.lastStyle { e.style = last }
+        if prefs.autoZooms, device == nil {
+            e.segments = Motion.autoSegments(samples: samples, duration: duration)
+        }
+        return e
+    }
 
     var edits = Edits() {
         didSet {
@@ -24,6 +38,7 @@ final class EditorModel {
                   && edits.style.hideIdleCursor == oldValue.style.hideIdleCursor,
                   aspectChanged: edits.style.aspect != oldValue.style.aspect)
             scheduleSave()
+            Prefs.shared.lastStyle = edits.style
         }
     }
 
@@ -73,6 +88,7 @@ final class EditorModel {
             return
         }
         hasCamera = source.cameraTrack != nil
+        flags = log?.flags ?? []
         samples = log?.decoded ?? []
         displayPoints = log.map { CGSize(width: $0.displayWidth, height: $0.displayHeight) }
             ?? CGSize(width: sourceSize.width / 2, height: sourceSize.height / 2)
@@ -82,13 +98,13 @@ final class EditorModel {
             return s.down && !wasDown ? s.t : nil
         }
 
-        var e = project.loadEdits() ?? Edits()
-        if project.loadEdits() == nil {
-            e.segments = Motion.autoSegments(samples: samples, duration: duration)
-        }
+        let isNew = project.loadEdits() == nil
+        let e = project.loadEdits() ?? Self.initialEdits(samples: samples, duration: duration, device: log?.device)
         motion = Motion(samples: samples, segments: e.segments, style: e.style, duration: duration)
         compositor = Compositor(style: e.style, motion: motion, displayPoints: displayPoints)
         compositor.update(style: e.style, motion: motion)
+        compositor.setDevice(log?.device, hasCursor: !samples.isEmpty)
+        isDevice = log?.device != nil
         edits = e
 
         await rebuildComposition()
@@ -100,7 +116,7 @@ final class EditorModel {
             MainActor.assumeIsolated { self?.tick(t.seconds) }
         }
         loaded = true
-        if project.loadEdits() == nil { project.save(edits) }
+        if isNew { project.save(edits) }
         seek(to: edits.trimStart)
     }
 
@@ -221,23 +237,28 @@ final class EditorModel {
     // MARK: Export
 
     enum Resolution: Double, CaseIterable, Identifiable {
-        case p1080 = 1080, p1440 = 1440, p2160 = 2160
+        case p720 = 720, p1080 = 1080, p1440 = 1440, p2160 = 2160
         var id: Double { rawValue }
         var label: String { self == .p2160 ? "4K" : "\(Int(rawValue))p" }
     }
 
-    func export(resolution: Resolution, codec: Render.Codec, to url: URL) async {
+    func export(resolution: Resolution, settings: Exporter.Settings, to url: URL) async {
         exporting = true
         exportProgress = 0
         exportError = nil
         exportedURL = nil
         defer { exporting = false }
         do {
-            let canvas = compositor.canvas(source: sourceSize, short: resolution.rawValue)
-            let comp = Render.composition(source: source, compositor: compositor, canvas: canvas)
+            // GIFs: cap the size at 1080p and the frame rate at 30.
+            let short = settings.format == .gif ? min(resolution.rawValue, 1080) : resolution.rawValue
+            let fps = settings.format == .gif ? min(settings.fps, 30) : settings.fps
+            let canvas = compositor.canvas(source: sourceSize, short: short)
+            let comp = Render.composition(source: source, compositor: compositor, canvas: canvas, fps: fps)
             let range = CMTimeRange(start: CMTime(seconds: edits.trimStart, preferredTimescale: 600),
                                     end: CMTime(seconds: trimEnd, preferredTimescale: 600))
-            try await Render.export(asset: source.asset, composition: comp, range: range, codec: codec, to: url) { p in
+            var s = settings
+            s.fps = fps
+            try await Exporter.export(asset: source.asset, composition: comp, range: range, settings: s, to: url) { p in
                 Task { @MainActor in self.exportProgress = p }
             }
             exportedURL = url

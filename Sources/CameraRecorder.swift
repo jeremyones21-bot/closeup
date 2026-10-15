@@ -38,7 +38,10 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             throw Failure(message: "No camera found.")
         }
         session.beginConfiguration()
-        session.sessionPreset = session.canSetSessionPreset(.hd1920x1080) ? .hd1920x1080 : .high
+        let wanted = UserDefaults.standard.string(forKey: "cameraResolution") ?? "p1080"
+        let presets: [AVCaptureSession.Preset] = wanted == "p2160" ? [.hd4K3840x2160, .hd1920x1080, .high]
+            : wanted == "p720" ? [.hd1280x720, .high] : [.hd1920x1080, .high]
+        session.sessionPreset = presets.first { session.canSetSessionPreset($0) } ?? .high
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw Failure(message: "Couldn't use \(device.localizedName).") }
         session.addInput(input)

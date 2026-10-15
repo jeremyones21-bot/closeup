@@ -50,7 +50,7 @@ struct RecordBar: View {
         @Bindable var app = app
         HStack(spacing: 4) {
             Button {
-                app.bar.hide()
+                app.hideBar()
             } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
                     .frame(width: 26, height: 26)
@@ -62,6 +62,7 @@ struct RecordBar: View {
             ForEach(AppState.SourceMode.allCases) { m in
                 ModeButton(mode: m, selected: app.mode == m) {
                     app.mode = m
+                    app.modeChanged()
                     if m == .area && app.area == nil { app.selectArea() }
                 }
             }
@@ -145,8 +146,7 @@ struct RecordBar: View {
                         }
                     }
                 }
-                Divider()
-                Text("Shortcuts: \(Hotkeys.startStop.label) start/stop · \(Hotkeys.pause.label) pause · \(Hotkeys.flag.label) flag")
+
             } label: {
                 Image(systemName: "ellipsis.circle").font(.system(size: 15)).foregroundStyle(.secondary)
                     .frame(width: 30, height: 32)
@@ -155,6 +155,15 @@ struct RecordBar: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Recording options")
+
+            Button {
+                app.hideBar()
+                app.openHome?()
+            } label: {
+                Image(systemName: "folder").font(.system(size: 15)).foregroundStyle(.secondary).frame(width: 30, height: 32)
+            }
+            .buttonStyle(.plain)
+            .help("Your recordings")
 
             divider
 
@@ -234,6 +243,21 @@ struct RecordBar: View {
                          active: app.windowID != nil)
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        case .device:
+            Menu {
+                Picker("Device", selection: $app.phoneID) {
+                    ForEach(app.phones) { Text($0.name).tag(Optional($0.id)) }
+                }
+                .pickerStyle(.inline)
+                Divider()
+                Button("Refresh List") { app.refresh() }
+            } label: {
+                BarLabel(symbol: "iphone",
+                         text: app.phones.first { $0.id == app.phoneID }?.name ?? "Connect an iPhone or iPad",
+                         active: app.phoneID != nil)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Plug in with a cable, unlock it and tap Trust")
         case .area:
             Button {
                 app.selectArea()
@@ -263,7 +287,8 @@ private struct ModeButton: View {
             .foregroundStyle(selected ? .primary : .secondary)
         }
         .buttonStyle(.plain)
-        .help("Record \(mode == .display ? "a whole display" : mode == .window ? "one window" : "part of the screen")")
+        .help(mode == .display ? "Record a whole display" : mode == .window ? "Record one window"
+              : mode == .area ? "Record part of the screen" : "Record an iPhone or iPad over USB")
     }
 }
 

@@ -49,6 +49,8 @@ struct Inspector: View {
                 }
             }
 
+            PresetSection(model: model)
+
             Section("Backdrop") {
                 BackdropGrid(selection: $model.edits.style.backdrop)
             }
@@ -117,5 +119,47 @@ struct BackdropGrid: View {
             LinearGradient(colors: [Color(red: t.0, green: t.1, blue: t.2), Color(red: bot.0, green: bot.1, blue: bot.2)],
                            startPoint: .topLeading, endPoint: .bottom)
         }
+    }
+}
+
+/// Save the current look as a preset, apply one, or mark one as the default for new recordings.
+struct PresetSection: View {
+    @Bindable var model: EditorModel
+    @State private var presets = PresetStore.all()
+    @State private var naming = false
+    @State private var name = ""
+
+    var body: some View {
+        Section("Preset") {
+            Menu(presets.first { $0.style == model.edits.style }?.name ?? "Custom") {
+                ForEach(presets) { p in
+                    Button(p.isDefault ? "\(p.name) (default)" : p.name) { model.edits.style = p.style }
+                }
+                if !presets.isEmpty { Divider() }
+                Button("Save Current Look as Preset…") { name = ""; naming = true }
+                Button("Import Preset…") { _ = PresetStore.importFile(); presets = PresetStore.all() }
+                if let current = presets.first(where: { $0.style == model.edits.style }) {
+                    Divider()
+                    Button(current.isDefault ? "Stop Using as Default" : "Use for New Recordings") {
+                        PresetStore.setDefault(current.isDefault ? nil : current)
+                        presets = PresetStore.all()
+                    }
+                    Button("Share Preset File…") { PresetStore.reveal(current) }
+                    Button("Delete Preset", role: .destructive) { PresetStore.delete(current); presets = PresetStore.all() }
+                }
+            }
+        }
+        .alert("Save Preset", isPresented: $naming) {
+            TextField("Name", text: $name)
+            Button("Save") {
+                guard !name.isEmpty else { return }
+                PresetStore.save(Preset(name: name, style: model.edits.style))
+                presets = PresetStore.all()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Saves the backdrop, frame, cursor and camera settings.")
+        }
+        .onAppear { presets = PresetStore.all() }
     }
 }

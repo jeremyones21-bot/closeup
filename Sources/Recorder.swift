@@ -8,6 +8,8 @@ enum CaptureTarget: Equatable {
     case window(CGWindowID)
     /// A rectangle on a display, in that display's points, top-left origin.
     case area(CGDirectDisplayID, CGRect)
+    /// An iPhone or iPad over USB (AVCaptureDevice uniqueID).
+    case device(String, name: String)
 }
 
 struct CaptureOptions {
@@ -44,7 +46,7 @@ final class PauseClock: @unchecked Sendable {
 
     /// The same sample buffer, moved earlier by the paused time so far.
     static func retimed(_ sb: CMSampleBuffer, by off: Double) -> CMSampleBuffer? {
-        guard off > 0 else { return sb }
+        guard off != 0 else { return sb }
         var count: CMItemCount = 0
         CMSampleBufferGetSampleTimingInfoArray(sb, entryCount: 0, arrayToFill: nil, entriesNeededOut: &count)
         guard count > 0 else { return sb }
@@ -101,6 +103,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     private var capturedSize = CGSize.zero   // points
     private var scale: Double = 2
     private var camera: CameraRecorder?
+    private var device: DeviceRecorder?
+    private var deviceName: String?
 
     var onStreamError: ((Error) -> Void)?
 
@@ -137,6 +141,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         if let id = opts.cameraID {
             camera = try CameraRecorder(deviceID: id, to: project.cameraVideo, clock: clock)
         }
+        if case .device(let id, let name) = opts.target {
+            let d = try DeviceRecorder(deviceID: id, to: project.video, clock: clock)
+            device = d
+            deviceName = name
+            d.start()
+            return
+        }
         let content = try await Self.content()
         let me = content.applications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
         let cfg = SCStreamConfiguration()
@@ -162,6 +173,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
             capturedSize = rect.size
             let f = Self.screen(for: id)?.frame ?? NSRect(x: 0, y: 0, width: display.width, height: display.height)
             region = NSRect(x: f.minX + rect.minX, y: f.maxY - rect.maxY, width: rect.width, height: rect.height)
+        case .device:
+            return   // handled above
         }
 
         scale = Double(filter.pointPixelScale)
@@ -258,6 +271,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
 
     // MARK: Pause, flags
 
+    var isDevice: Bool { device != nil }
+
     func pause() {
         clock.pause(at: Self.now())
     }
@@ -284,8 +299,21 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         flags.append(clock.recordingTime(Self.now()))
     }
 
+    /// The recorded region in Cocoa global coordinates, for dimming the rest of the screen.
+    var liveRegion: NSRect? {
+        if let id = trackedWindow, let b = Self.windowBounds(id) { return Self.cocoaRect(fromCG: b) }
+        return device == nil ? region : nil
+    }
+
     @MainActor
     func stop() async throws -> ProjectFolder {
+        if let device {
+            guard await device.stop() else { throw Failure.writer("no frames came from the device. Unlock it and try again.") }
+            var log = CursorLog(displayWidth: device.size.width / 2, displayHeight: device.size.height / 2, scale: 2, samples: [])
+            log.device = deviceName
+            if let d = try? JSONEncoder().encode(log) { try d.write(to: project.cursorFile, options: .atomic) }
+            return project
+        }
         cursorTimer?.invalidate()
         cursorTimer = nil
         try? await stream?.stopCapture()

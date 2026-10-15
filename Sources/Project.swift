@@ -18,6 +18,8 @@ struct CursorLog: Codable {
     var cameraOffset: Double?
     /// Moments marked while recording (seconds into screen.mov).
     var flags: [Double]?
+    /// Set for iPhone / iPad recordings: the device's name, used to draw a device frame.
+    var device: String?
 
     var decoded: [CursorSample] {
         samples.compactMap { r in
@@ -182,12 +184,14 @@ struct ProjectFolder: Identifiable, Hashable {
         (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
     }
 
-    static let root: URL = {
+    /// Settings › Recording › Save new projects to (default ~/Movies/Closeup).
+    static var root: URL {
         let movies = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
-        let dir = movies.appendingPathComponent("Closeup", isDirectory: true)
+        let dir = UserDefaults.standard.string(forKey: "saveDirectory").map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? movies.appendingPathComponent("Closeup", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
-    }()
+    }
 
     static func all() -> [ProjectFolder] {
         let urls = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey])) ?? []
