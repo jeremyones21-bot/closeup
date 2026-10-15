@@ -103,14 +103,58 @@ struct RecordBar: View {
             .menuIndicator(.hidden)
             .fixedSize()
 
-            Button {
-                app.systemAudio.toggle()
+            Menu {
+                Button { app.systemAudio = false } label: { checkmark("No Mac Sound", !app.systemAudio) }
+                Button { app.systemAudio = true; app.audioApps = nil } label: { checkmark("All Apps", app.systemAudio && app.audioApps == nil) }
+                if !app.runningApps.isEmpty {
+                    Section("Only These Apps") {
+                        ForEach(app.runningApps) { a in
+                            Button {
+                                var set = Set(app.audioApps ?? [])
+                                if set.contains(a.id) { set.remove(a.id) } else { set.insert(a.id) }
+                                app.audioApps = set.isEmpty ? nil : Array(set).sorted()
+                                app.systemAudio = true
+                            } label: { checkmark(a.name, app.systemAudio && (app.audioApps ?? []).contains(a.id)) }
+                        }
+                    }
+                }
             } label: {
-                BarLabel(symbol: app.systemAudio ? "speaker.wave.2" : "speaker.slash",
-                         text: app.systemAudio ? "Mac sound on" : "No Mac sound", active: app.systemAudio)
+                BarLabel(symbol: app.systemAudio ? "speaker.wave.2" : "speaker.slash", text: soundLabel, active: app.systemAudio)
             }
-            .buttonStyle(.plain)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .help("Record sound playing on this Mac")
+
+            Menu {
+                Picker("Countdown", selection: $app.countdown) {
+                    Text("No Countdown").tag(0)
+                    Text("3 Seconds").tag(3)
+                    Text("5 Seconds").tag(5)
+                    Text("10 Seconds").tag(10)
+                }
+                Divider()
+                Toggle("Hide Desktop Icons", isOn: $app.hideDesktopIcons)
+                Toggle("Hide Dock Icon While Recording", isOn: $app.hideDockIcon)
+                Divider()
+                Button(SpeakerNotes.shared.isVisible ? "Hide Speaker Notes" : "Show Speaker Notes") { SpeakerNotes.shared.toggle() }
+                if app.mode == .window, app.windowID != nil {
+                    Menu("Resize Window") {
+                        ForEach(WindowResizer.sizes, id: \.label) { size in
+                            Button(size.label) { app.resizeWindow(to: size.size) }
+                        }
+                    }
+                }
+                Divider()
+                Text("Shortcuts: \(Hotkeys.startStop.label) start/stop · \(Hotkeys.pause.label) pause · \(Hotkeys.flag.label) flag")
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.system(size: 15)).foregroundStyle(.secondary)
+                    .frame(width: 30, height: 32)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Recording options")
 
             divider
 
@@ -147,6 +191,16 @@ struct RecordBar: View {
             }
         }
         .fixedSize()
+    }
+
+    private var soundLabel: String {
+        guard app.systemAudio else { return "No Mac sound" }
+        guard let ids = app.audioApps else { return "All Mac sound" }
+        return ids.count == 1 ? (app.runningApps.first { $0.id == ids[0] }?.name ?? "1 app") : "Sound from \(ids.count) apps"
+    }
+
+    private func checkmark(_ title: String, _ on: Bool) -> some View {
+        on ? Label(title, systemImage: "checkmark") : Label(title, systemImage: "")
     }
 
     private var divider: some View {

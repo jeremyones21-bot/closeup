@@ -88,6 +88,22 @@ final class AppState {
     var systemAudio = UserDefaults.standard.bool(forKey: "systemAudio") {
         didSet { UserDefaults.standard.set(systemAudio, forKey: "systemAudio") }
     }
+    /// Bundle IDs whose sound is recorded; nil = all apps.
+    var audioApps: [String]? = UserDefaults.standard.stringArray(forKey: "audioApps") {
+        didSet { UserDefaults.standard.set(audioApps, forKey: "audioApps") }
+    }
+    var runningApps: [Device] = []   // apps with windows, for the Mac sound menu
+    var hideDesktopIcons = UserDefaults.standard.bool(forKey: "hideDesktopIcons") {
+        didSet { UserDefaults.standard.set(hideDesktopIcons, forKey: "hideDesktopIcons") }
+    }
+    var hideDockIcon = UserDefaults.standard.object(forKey: "hideDockIcon") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(hideDockIcon, forKey: "hideDockIcon") }
+    }
+    var countdown = UserDefaults.standard.object(forKey: "countdown") as? Int ?? 3 {
+        didSet { UserDefaults.standard.set(countdown, forKey: "countdown") }
+    }
+    var paused = false
+    var recovered: [String] = []
 
     /// Set by a view that has the openWindow action.
     var openEditor: ((URL) -> Void)?
@@ -107,6 +123,7 @@ final class AppState {
     }
 
     func refresh() {
+        recoverInterruptedTakes()
         projects = ProjectFolder.all()
         cameras = CameraRecorder.devices().map { Device(id: $0.uniqueID, name: $0.localizedName) }
         microphones = Recorder.microphones().map { Device(id: $0.uniqueID, name: $0.localizedName) }
@@ -122,6 +139,12 @@ final class AppState {
                         && $0.owningApplication?.bundleIdentifier != me && $0.owningApplication != nil }
                     .map { WindowChoice(id: $0.windowID, app: $0.owningApplication?.applicationName ?? "Window", title: $0.title ?? "") }
                     .sorted { ($0.app, $0.title) < ($1.app, $1.title) }
+                var seen = Set<String>()
+                runningApps = content.applications
+                    .filter { $0.bundleIdentifier != me && !$0.applicationName.isEmpty }
+                    .filter { app in content.windows.contains { $0.owningApplication?.bundleIdentifier == app.bundleIdentifier && $0.isOnScreen } }
+                    .compactMap { seen.insert($0.bundleIdentifier).inserted ? Device(id: $0.bundleIdentifier, name: $0.applicationName) : nil }
+                    .sorted { $0.name < $1.name }
                 needsPermission = false
                 if !displays.contains(where: { $0.displayID == displayID }) { displayID = displays.first?.displayID ?? CGMainDisplayID() }
                 if let w = windowID, !windows.contains(where: { $0.id == w }) { windowID = nil }
@@ -176,11 +199,16 @@ final class AppState {
     private func beginCountdown() {
         bar.hide()
         showStatusItem()
+        if hideDockIcon { NSApp.setActivationPolicy(.accessory) }
         NSApp.hide(nil)
-        phase = .countdown(3)
+        guard countdown > 0 else {
+            Task { await beginCapture() }
+            return
+        }
+        phase = .countdown(countdown)
         updateStatus()
         Task {
-            for n in [2, 1] {
+            for n in stride(from: countdown - 1, through: 1, by: -1) {
                 try? await Task.sleep(for: .seconds(1))
                 guard case .countdown = phase else { return }
                 phase = .countdown(n)
@@ -189,6 +217,65 @@ final class AppState {
             try? await Task.sleep(for: .seconds(1))
             guard case .countdown = phase else { return }
             await beginCapture()
+        }
+    }
+
+    func resizeWindow(to size: CGSize) {
+        guard let id = windowID else { return }
+        switch WindowResizer.resize(windowID: id, to: size) {
+        case .done: problem = nil
+        case .needsPermission: problem = "To resize windows, allow Closeup in System Settings › Privacy & Security › Accessibility."
+        case .notFound: problem = "Couldn't find that window. Choose it again."
+        }
+    }
+
+    // MARK: During a take
+
+    func togglePause() {
+        guard phase == .recording, let recorder else { return }
+        if paused { recorder.resume() } else { recorder.pause() }
+        paused.toggle()
+        updateStatus()
+    }
+
+    func addFlag() {
+        guard phase == .recording, !paused else { return }
+        recorder?.addFlag()
+        flagCount += 1
+        updateStatus()
+    }
+    private var flagCount = 0
+
+    /// Start/stop from the global shortcut: starts with the bar's current choices.
+    func hotkeyStartStop() {
+        switch phase {
+        case .idle: startRecording()
+        case .countdown, .recording: Task { await stopRecording() }
+        case .saving: break
+        }
+    }
+
+    /// Stops and throws the take away.
+    func cancelRecording() {
+        Task {
+            await stopRecording(openEditor: false)
+            if let p = projects.first { delete(p) }
+        }
+    }
+
+    /// A take whose app quit mid-recording has screen.mov (playable thanks to fragments) and the
+    /// autosaved cursor log but no cursor.json. Finish it so it shows up like any other.
+    private func recoverInterruptedTakes() {
+        guard phase == .idle else { return }
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: ProjectFolder.root, includingPropertiesForKeys: nil)) ?? []
+        for url in urls where url.pathExtension == "closeup" {
+            let p = ProjectFolder(url: url)
+            if fm.fileExists(atPath: p.partialCursorFile.path), !fm.fileExists(atPath: p.cursorFile.path),
+               fm.fileExists(atPath: p.video.path) {
+                try? fm.moveItem(at: p.partialCursorFile, to: p.cursorFile)
+                recovered.append(p.name)
+            }
         }
     }
 
@@ -207,10 +294,14 @@ final class AppState {
         case .area: target = .area(area?.display ?? displayID, area?.rect ?? .zero)
         }
         do {
-            try await rec.start(CaptureOptions(target: target, microphoneID: microphoneID,
-                                               systemAudio: systemAudio, cameraID: cameraID), into: .makeNew())
+            try await rec.start(CaptureOptions(target: target, microphoneID: microphoneID, systemAudio: systemAudio,
+                                               audioApps: audioApps, cameraID: cameraID,
+                                               hideDesktopIcons: hideDesktopIcons), into: .makeNew())
+            if SpeakerNotes.shared.isVisible { SpeakerNotes.shared.show() }
             recorder = rec
             started = .now
+            paused = false
+            flagCount = 0
             phase = .recording
             ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.updateStatus() }
@@ -221,11 +312,12 @@ final class AppState {
         }
     }
 
-    func stopRecording() async {
+    func stopRecording(openEditor shouldOpen: Bool = true) async {
         switch phase {
         case .countdown:
             phase = .idle
             removeStatusItem()
+            NSApp.setActivationPolicy(.regular)
             NSApp.unhide(nil)
             return
         case .recording:
@@ -240,11 +332,13 @@ final class AppState {
             let project = try await recorder!.stop()
             recorder = nil
             phase = .idle
+            paused = false
             removeStatusItem()
             projects = ProjectFolder.all()
+            NSApp.setActivationPolicy(.regular)
             NSApp.unhide(nil)
             NSApp.activate()
-            openEditor?(project.url)
+            if shouldOpen { openEditor?(project.url) }
         } catch {
             recorder = nil
             fail(error)
@@ -253,7 +347,9 @@ final class AppState {
 
     private func fail(_ error: Error) {
         phase = .idle
+        paused = false
         removeStatusItem()
+        NSApp.setActivationPolicy(.regular)
         NSApp.unhide(nil)
         NSApp.activate()
         let msg = error.localizedDescription
@@ -298,9 +394,30 @@ final class AppState {
     private func showStatusItem() {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.target = self
-        item.button?.action = #selector(statusClicked)
         statusItem = item
+        rebuildStatusMenu()
+    }
+
+    /// The menu under the timer while recording.
+    private func rebuildStatusMenu() {
+        let menu = NSMenu()
+        switch phase {
+        case .countdown:
+            menu.addItem(ClosureMenuItem("Cancel") { [weak self] in Task { await self?.stopRecording() } })
+        case .recording:
+            menu.addItem(ClosureMenuItem("Stop Recording", key: Hotkeys.startStop.label) { [weak self] in Task { await self?.stopRecording() } })
+            menu.addItem(ClosureMenuItem(paused ? "Resume" : "Pause", key: Hotkeys.pause.label) { [weak self] in self?.togglePause() })
+            menu.addItem(ClosureMenuItem("Add Flag", key: Hotkeys.flag.label) { [weak self] in self?.addFlag() })
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem(SpeakerNotes.shared.isVisible ? "Hide Speaker Notes" : "Show Speaker Notes") {
+                SpeakerNotes.shared.toggle()
+            })
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem("Cancel and Discard") { [weak self] in self?.cancelRecording() })
+        default:
+            break
+        }
+        statusItem?.menu = menu
     }
 
     private func removeStatusItem() {
@@ -308,22 +425,19 @@ final class AppState {
         statusItem = nil
     }
 
-    @objc private func statusClicked() {
-        Task { await stopRecording() }
-    }
-
     private func updateStatus() {
         guard let button = statusItem?.button else { return }
         let text: String
         switch phase {
-        case .countdown(let n): text = "Recording in \(n)…  (click to cancel)"
+        case .countdown(let n): text = "Recording in \(n)…"
         case .recording:
             let s = Int(Date().timeIntervalSince(started))
-            text = String(format: "%d:%02d  Stop", s / 60, s % 60)
+            text = paused ? "Paused" : String(format: "%d:%02d", s / 60, s % 60) + (flagCount > 0 ? "  ⚑\(flagCount)" : "")
         case .saving: text = "Saving…"
         case .idle: text = ""
         }
-        let dot = NSAttributedString(string: "● ", attributes: [.foregroundColor: phase == .recording ? NSColor.systemRed : NSColor.secondaryLabelColor])
+        rebuildStatusMenu()
+        let dot = NSAttributedString(string: "● ", attributes: [.foregroundColor: phase == .recording && !paused ? NSColor.systemRed : NSColor.secondaryLabelColor])
         let s = NSMutableAttributedString(attributedString: dot)
         s.append(NSAttributedString(string: text, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)]))
         button.attributedTitle = s
@@ -337,6 +451,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pending: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Hotkeys.shared.install(startStop: { AppState.shared.hotkeyStartStop() },
+                               pause: { AppState.shared.togglePause() },
+                               flag: { AppState.shared.addFlag() })
         // URLs can arrive before any window exists; replay once the home window has registered.
         Task {
             for _ in 0..<50 where AppState.shared.openEditor == nil { try? await Task.sleep(for: .milliseconds(100)) }
@@ -381,4 +498,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app?.openEditor?(URL(fileURLWithPath: path, isDirectory: true))
         NSApp.activate()
     }
+}
+
+/// An NSMenuItem that runs a closure, so menus can be built without @objc targets.
+final class ClosureMenuItem: NSMenuItem {
+    private let run: () -> Void
+
+    init(_ title: String, key: String? = nil, _ run: @escaping () -> Void) {
+        self.run = run
+        super.init(title: key.map { "\(title)    \($0)" } ?? title, action: #selector(fire), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) { fatalError() }
+
+    @objc private func fire() { run() }
 }

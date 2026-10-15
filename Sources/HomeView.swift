@@ -41,6 +41,15 @@ struct HomeView: View {
                         }
                     }
                 }
+                if !app.recovered.isEmpty {
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: "arrow.uturn.backward.circle").foregroundStyle(.secondary)
+                        Text("Recovered \(app.recovered.count == 1 ? "a recording" : "\(app.recovered.count) recordings") that was interrupted: \(app.recovered.joined(separator: ", "))")
+                            .font(.callout)
+                        Spacer()
+                        Button("OK") { app.recovered = [] }
+                    }
+                }
                 if let p = app.problem {
                     Text(p).font(.callout).foregroundStyle(.red)
                 }

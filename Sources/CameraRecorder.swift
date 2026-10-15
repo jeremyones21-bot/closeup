@@ -8,6 +8,7 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var writer: AVAssetWriter?
     private var input: AVAssetWriterInput?
     private let url: URL
+    private let clock: PauseClock?
     /// Host-clock seconds of the first written frame.
     private(set) var firstFrameTime: Double?
 
@@ -29,8 +30,9 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
-    init(deviceID: String?, to url: URL) throws {
+    init(deviceID: String?, to url: URL, clock: PauseClock? = nil) throws {
         self.url = url
+        self.clock = clock
         super.init()
         guard let device = deviceID.flatMap(AVCaptureDevice.init(uniqueID:)) ?? AVCaptureDevice.default(for: .video) else {
             throw Failure(message: "No camera found.")
@@ -70,6 +72,8 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if let clock = session.synchronizationClock {
             pts = CMSyncConvertTime(pts, from: clock, to: CMClockGetHostTimeClock())
         }
+        if self.clock?.isPaused == true { return }
+        pts = CMTimeSubtract(pts, CMTime(seconds: self.clock?.offset ?? 0, preferredTimescale: 1_000_000_000))
         if writer == nil {
             let w = CVPixelBufferGetWidth(image), h = CVPixelBufferGetHeight(image)
             guard let wr = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return }

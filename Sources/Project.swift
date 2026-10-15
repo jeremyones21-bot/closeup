@@ -16,6 +16,8 @@ struct CursorLog: Codable {
     var samples: [[Double]]    // [t, x, y, down] — compact, a 10-minute take is ~72k rows
     /// Seconds from the start of screen.mov to the first frame of camera.mov (may be negative).
     var cameraOffset: Double?
+    /// Moments marked while recording (seconds into screen.mov).
+    var flags: [Double]?
 
     var decoded: [CursorSample] {
         samples.compactMap { r in
@@ -173,6 +175,8 @@ struct ProjectFolder: Identifiable, Hashable {
     var cameraVideo: URL { url.appendingPathComponent("camera.mov") }
     var hasCamera: Bool { FileManager.default.fileExists(atPath: cameraVideo.path) }
     var cursorFile: URL { url.appendingPathComponent("cursor.json") }
+    /// Written every 2 s during recording; becomes cursor.json if the take is recovered.
+    var partialCursorFile: URL { url.appendingPathComponent("cursor.partial.json") }
     var editsFile: URL { url.appendingPathComponent("edits.json") }
     var created: Date {
         (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
