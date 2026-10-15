@@ -12,8 +12,9 @@ final class RecordingWidget {
 
     func show() {
         if panel == nil {
-            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 44),
-                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            let p = BottomPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 44),
+                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.bottomOffset = 24
             p.level = .floating
             p.isFloatingPanel = true
             p.hidesOnDeactivate = false
@@ -27,11 +28,8 @@ final class RecordingWidget {
             host.sizingOptions = [.preferredContentSize]
             p.contentView = host
             panel = p
-            let size = host.fittingSize
-            if let v = NSScreen.main?.visibleFrame {
-                p.setFrame(NSRect(x: v.midX - size.width / 2, y: v.minY + 24, width: size.width, height: size.height), display: true)
-            }
         }
+        (panel as? BottomPanel)?.recenter()
         panel?.orderFrontRegardless()
     }
 

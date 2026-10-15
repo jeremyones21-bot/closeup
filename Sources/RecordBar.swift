@@ -9,8 +9,9 @@ final class RecordBarController {
 
     func show(app: AppState) {
         if panel == nil {
-            let p = BarPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 64),
-                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            let p = BottomPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 64),
+                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.bottomOffset = 28
             p.level = .floating
             p.isFloatingPanel = true
             p.hidesOnDeactivate = false
@@ -25,12 +26,8 @@ final class RecordBarController {
             p.contentView = host
             panel = p
         }
-        guard let panel else { return }
-        panel.layoutIfNeeded()
-        let size = panel.contentView?.fittingSize ?? panel.frame.size
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        let v = screen.visibleFrame
-        panel.setFrame(NSRect(x: v.midX - size.width / 2, y: v.minY + 28, width: size.width, height: size.height), display: true)
+        guard let panel = panel as? BottomPanel else { return }
+        panel.recenter()
         panel.orderFrontRegardless()
         panel.makeKey()
     }
@@ -39,8 +36,40 @@ final class RecordBarController {
     var isVisible: Bool { panel?.isVisible ?? false }
 }
 
-private final class BarPanel: NSPanel {
+/// A floating panel that stays centred at the bottom of the screen the pointer is on, even as
+/// SwiftUI resizes it to fit its content (until you drag it somewhere yourself).
+final class BottomPanel: NSPanel {
+    var bottomOffset: CGFloat = 28
+    private var userMoved = false
+    private var placing = false
+
     override var canBecomeKey: Bool { true }
+
+    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
+        NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: self, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.userMoved == false { self?.recenter() } }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: self, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.placing == false, self?.isVisible == true { self?.userMoved = true } }
+        }
+    }
+
+    func recenter() {
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let v = screen.visibleFrame
+        var size = frame.size
+        if let fit = contentView?.fittingSize, fit.width > 10 { size = fit }
+        placing = true
+        setFrame(NSRect(x: (v.midX - size.width / 2).rounded(), y: v.minY + bottomOffset, width: size.width, height: size.height), display: true)
+        placing = false
+    }
+
+    override func orderOut(_ sender: Any?) {
+        userMoved = false   // next time it opens, it's centred again
+        super.orderOut(sender)
+    }
 }
 
 struct RecordBar: View {
