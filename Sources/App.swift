@@ -244,7 +244,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handle(_ url: URL) {
         switch url.host {
-        case "record": app?.startRecording(); return
+        case "record":
+            // closeup://record?camera=1&mic=1 — flags override the toggles for this take.
+            let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if let c = q.first(where: { $0.name == "camera" })?.value { app?.camera = c == "1" }
+            if let m = q.first(where: { $0.name == "mic" })?.value { app?.microphone = m == "1" }
+            app?.refresh()
+            app?.startRecording()
+            return
         case "stop": Task { await app?.stopRecording() }; return
         default: break
         }

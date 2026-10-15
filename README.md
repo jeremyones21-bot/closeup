@@ -19,7 +19,7 @@ Needs macOS 15+ and the Xcode command-line tools.
 
 ## URL scheme
 
-- `closeup://record`: start recording (3-second countdown)
+- `closeup://record?camera=1&mic=1`: start recording (3-second countdown); the flags are optional
 - `closeup://stop`: stop
 - `closeup://open?path=/path/to/Recording.closeup`: open in the editor
 
