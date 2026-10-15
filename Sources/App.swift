@@ -45,6 +45,9 @@ final class AppState {
     var displays: [SCDisplay] = []
     var displayID: CGDirectDisplayID = CGMainDisplayID()
     var microphone = false
+    var camera = false
+    var cameraID: String?
+    var cameras: [(id: String, name: String)] = []
     var problem: String?
     var needsPermission = false
 
@@ -58,6 +61,9 @@ final class AppState {
 
     func refresh() {
         projects = ProjectFolder.all()
+        cameras = CameraRecorder.devices().map { ($0.uniqueID, $0.localizedName) }
+        if let id = cameraID, !cameras.contains(where: { $0.id == id }) { cameraID = nil }
+        if cameraID == nil { cameraID = cameras.first?.id }
         Task {
             do {
                 displays = try await Recorder.displays()
@@ -79,6 +85,20 @@ final class AppState {
     func startRecording() {
         guard phase == .idle else { return }
         problem = nil
+        if camera {
+            Task {
+                guard await CameraRecorder.requestAccess() else {
+                    problem = "Closeup can't use the camera. Turn it on in System Settings › Privacy & Security › Camera, or switch Camera off."
+                    return
+                }
+                beginCountdown()
+            }
+        } else {
+            beginCountdown()
+        }
+    }
+
+    private func beginCountdown() {
         showStatusItem()
         NSApp.hide(nil)
         phase = .countdown(3)
@@ -105,7 +125,8 @@ final class AppState {
             }
         }
         do {
-            try await rec.start(displayID: displayID, microphone: microphone, into: .makeNew())
+            try await rec.start(displayID: displayID, microphone: microphone,
+                                camera: camera ? .some(cameraID) : nil, into: .makeNew())
             recorder = rec
             started = .now
             phase = .recording

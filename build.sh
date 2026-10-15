@@ -62,6 +62,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>$DEPLOY_TARGET</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
+    <key>NSCameraUsageDescription</key><string>Closeup records your camera as an overlay when Camera is on.</string>
     <key>NSMicrophoneUsageDescription</key><string>Closeup records your voice alongside the screen when Microphone is on.</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>CFBundleURLTypes</key>

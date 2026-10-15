@@ -14,6 +14,8 @@ struct CursorLog: Codable {
     var displayHeight: Double
     var scale: Double          // pixels per point
     var samples: [[Double]]    // [t, x, y, down] — compact, a 10-minute take is ~72k rows
+    /// Seconds from the start of screen.mov to the first frame of camera.mov (may be negative).
+    var cameraOffset: Double?
 
     var decoded: [CursorSample] {
         samples.compactMap { r in
@@ -67,6 +69,25 @@ enum Aspect: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum CameraCorner: String, Codable, CaseIterable, Identifiable {
+    case bottomLeft, bottomRight, topLeft, topRight
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .bottomLeft: "Bottom Left"
+        case .bottomRight: "Bottom Right"
+        case .topLeft: "Top Left"
+        case .topRight: "Top Right"
+        }
+    }
+}
+
+enum CameraShape: String, Codable, CaseIterable, Identifiable {
+    case circle, rounded
+    var id: String { rawValue }
+    var label: String { self == .circle ? "Circle" : "Rounded" }
+}
+
 enum Backdrop: String, Codable, CaseIterable, Identifiable {
     case graphite, slate, sand, sky, sage, plum, wallpaper, white, black
     var id: String { rawValue }
@@ -97,6 +118,11 @@ struct Style: Codable, Equatable {
     var cursorSmoothing: Double = 0.5 // 0 = raw, 1 = very smooth
     var clickEffect = true
     var hideIdleCursor = false
+    var showCamera = true
+    var cameraCorner: CameraCorner = .bottomLeft
+    var cameraSize: Double = 0.26      // fraction of the canvas's short side
+    var cameraShape: CameraShape = .circle
+    var cameraMirror = true
 
     init() {}
 
@@ -112,6 +138,11 @@ struct Style: Codable, Equatable {
         cursorSmoothing = try c.decodeIfPresent(Double.self, forKey: .cursorSmoothing) ?? def.cursorSmoothing
         clickEffect = try c.decodeIfPresent(Bool.self, forKey: .clickEffect) ?? def.clickEffect
         hideIdleCursor = try c.decodeIfPresent(Bool.self, forKey: .hideIdleCursor) ?? def.hideIdleCursor
+        showCamera = try c.decodeIfPresent(Bool.self, forKey: .showCamera) ?? def.showCamera
+        cameraCorner = try c.decodeIfPresent(CameraCorner.self, forKey: .cameraCorner) ?? def.cameraCorner
+        cameraSize = try c.decodeIfPresent(Double.self, forKey: .cameraSize) ?? def.cameraSize
+        cameraShape = try c.decodeIfPresent(CameraShape.self, forKey: .cameraShape) ?? def.cameraShape
+        cameraMirror = try c.decodeIfPresent(Bool.self, forKey: .cameraMirror) ?? def.cameraMirror
     }
 }
 
@@ -139,6 +170,8 @@ struct ProjectFolder: Identifiable, Hashable {
     var id: URL { url }
     var name: String { url.deletingPathExtension().lastPathComponent }
     var video: URL { url.appendingPathComponent("screen.mov") }
+    var cameraVideo: URL { url.appendingPathComponent("camera.mov") }
+    var hasCamera: Bool { FileManager.default.fileExists(atPath: cameraVideo.path) }
     var cursorFile: URL { url.appendingPathComponent("cursor.json") }
     var editsFile: URL { url.appendingPathComponent("edits.json") }
     var created: Date {

@@ -15,6 +15,7 @@ final class EditorModel {
     var playing = false
     var clicks: [Double] = []
     var selected: UUID?
+    var hasCamera = false
 
     var edits = Edits() {
         didSet {
@@ -33,6 +34,7 @@ final class EditorModel {
     var exportError: String?
 
     @ObservationIgnored private var asset: AVURLAsset!
+    @ObservationIgnored private var source: Render.Source!
     @ObservationIgnored private var samples: [CursorSample] = []
     @ObservationIgnored private var sourceSize = CGSize(width: 1920, height: 1080)
     @ObservationIgnored private var displayPoints = CGSize(width: 1440, height: 900)
@@ -64,6 +66,13 @@ final class EditorModel {
             return
         }
         let log = project.loadCursor()
+        do {
+            source = try await Render.source(project: project, cameraOffset: log?.cameraOffset)
+        } catch {
+            loadError = "Couldn't open this recording: \(error.localizedDescription)"
+            return
+        }
+        hasCamera = source.cameraTrack != nil
         samples = log?.decoded ?? []
         displayPoints = log.map { CGSize(width: $0.displayWidth, height: $0.displayHeight) }
             ?? CGSize(width: sourceSize.width / 2, height: sourceSize.height / 2)
@@ -83,7 +92,7 @@ final class EditorModel {
         edits = e
 
         await rebuildComposition()
-        let item = AVPlayerItem(asset: asset)
+        let item = AVPlayerItem(asset: source.asset)
         item.videoComposition = composition
         player.replaceCurrentItem(with: item)
         player.actionAtItemEnd = .pause
@@ -149,7 +158,7 @@ final class EditorModel {
 
     private func rebuildComposition() async {
         let canvas = compositor.canvas(source: sourceSize, short: Self.previewShort)
-        composition = try? await Render.composition(asset: asset, compositor: compositor, canvas: canvas)
+        composition = Render.composition(source: source, compositor: compositor, canvas: canvas)
     }
 
     private func scheduleSave() {
@@ -225,10 +234,10 @@ final class EditorModel {
         defer { exporting = false }
         do {
             let canvas = compositor.canvas(source: sourceSize, short: resolution.rawValue)
-            let comp = try await Render.composition(asset: asset, compositor: compositor, canvas: canvas)
+            let comp = Render.composition(source: source, compositor: compositor, canvas: canvas)
             let range = CMTimeRange(start: CMTime(seconds: edits.trimStart, preferredTimescale: 600),
                                     end: CMTime(seconds: trimEnd, preferredTimescale: 600))
-            try await Render.export(asset: asset, composition: comp, range: range, codec: codec, to: url) { p in
+            try await Render.export(asset: source.asset, composition: comp, range: range, codec: codec, to: url) { p in
                 Task { @MainActor in self.exportProgress = p }
             }
             exportedURL = url

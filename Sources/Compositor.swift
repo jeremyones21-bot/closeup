@@ -51,7 +51,7 @@ final class Compositor: @unchecked Sendable {
         return CGSize(width: Double(Int(w.rounded()) & ~1), height: Double(Int(h.rounded()) & ~1))
     }
 
-    func compose(source: CIImage, time: Double, canvas: CGSize) -> CIImage {
+    func compose(source: CIImage, camera: CIImage? = nil, time: Double, canvas: CGSize) -> CIImage {
         lock.lock()
         let style = self.style, motion = self.motion
         lock.unlock()
@@ -112,7 +112,44 @@ final class Compositor: @unchecked Sendable {
             image = image.transformed(by: CGAffineTransform(translationX: -ox, y: -oy)
                 .concatenating(CGAffineTransform(scaleX: z, y: z)))
         }
-        return image.cropped(to: CGRect(origin: .zero, size: canvas))
+        image = image.cropped(to: CGRect(origin: .zero, size: canvas))
+
+        // Camera sits on top of the camera move, pinned to its corner.
+        if style.showCamera, let camera {
+            image = Compositor.cameraBubble(camera, style: style, canvas: canvas).composited(over: image)
+        }
+        return image
+    }
+
+    /// The webcam, filled into a square, mirrored if asked, masked to a circle or rounded
+    /// square, with a soft shadow, placed in a corner of the canvas.
+    static func cameraBubble(_ cam: CIImage, style: Style, canvas: CGSize) -> CIImage {
+        let short = min(canvas.width, canvas.height)
+        let d = style.cameraSize * short
+        let margin = 0.045 * short
+        let e = cam.extent
+        let side = min(e.width, e.height)
+        var img = cam.cropped(to: CGRect(x: e.midX - side / 2, y: e.midY - side / 2, width: side, height: side))
+            .transformed(by: CGAffineTransform(translationX: -(e.midX - side / 2), y: -(e.midY - side / 2)))
+        if style.cameraMirror {
+            img = img.transformed(by: CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -side, y: 0))
+        }
+        let k = d / side
+        let x: Double = (style.cameraCorner == .bottomLeft || style.cameraCorner == .topLeft) ? margin : canvas.width - margin - d
+        let y: Double = (style.cameraCorner == .bottomLeft || style.cameraCorner == .bottomRight) ? margin : canvas.height - margin - d
+        img = img.transformed(by: CGAffineTransform(scaleX: k, y: k).concatenating(CGAffineTransform(translationX: x, y: y)))
+
+        let rect = CGRect(x: x, y: y, width: d, height: d)
+        let radius = style.cameraShape == .circle ? d / 2 : d * 0.18
+        let mask = roundedRect(rect, radius: radius, color: .white)
+        let masked = img.applyingFilter("CIBlendWithAlphaMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage.empty(),
+            kCIInputMaskImageKey: mask,
+        ])
+        let shadow = roundedRect(rect, radius: radius, color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.35))
+            .applyingGaussianBlur(sigma: d * 0.04)
+            .transformed(by: CGAffineTransform(translationX: 0, y: -d * 0.02))
+        return masked.composited(over: shadow)
     }
 
     static func screenRect(source: CGSize, canvas: CGSize, padding: Double) -> CGRect {
@@ -212,16 +249,63 @@ final class Compositor: @unchecked Sendable {
 // MARK: - Video composition + export
 
 enum Render {
-    static func composition(asset: AVAsset, compositor: Compositor, canvas: CGSize) async throws -> AVVideoComposition {
-        let comp = try await AVMutableVideoComposition.videoComposition(with: asset) { request in
-            let out = compositor.compose(source: request.sourceImage, time: request.compositionTime.seconds, canvas: canvas)
-            request.finish(with: out, context: compositor.context)
+    /// Screen (and camera, if any) laid on one timeline. Composition time == screen.mov time,
+    /// which is what the cursor log and zooms are keyed to.
+    struct Source {
+        let asset: AVAsset
+        let screenTrack: CMPersistentTrackID
+        let cameraTrack: CMPersistentTrackID?
+        let duration: Double
+    }
+
+    static func source(project: ProjectFolder, cameraOffset: Double?) async throws -> Source {
+        let screen = AVURLAsset(url: project.video)
+        let duration = try await screen.load(.duration)
+        let comp = AVMutableComposition()
+        let full = CMTimeRange(start: .zero, duration: duration)
+
+        guard let sv = try await screen.loadTracks(withMediaType: .video).first,
+              let st = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw NSError(domain: "Closeup", code: 2, userInfo: [NSLocalizedDescriptionKey: "The recording has no video."])
         }
+        try st.insertTimeRange(full, of: sv, at: .zero)
+        for a in try await screen.loadTracks(withMediaType: .audio) {
+            if let at = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                try? at.insertTimeRange(full, of: a, at: .zero)
+            }
+        }
+
+        var cameraTrack: CMPersistentTrackID?
+        if project.hasCamera {
+            let cam = AVURLAsset(url: project.cameraVideo)
+            if let cv = try await cam.loadTracks(withMediaType: .video).first,
+               let ct = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                let camDur = try await cam.load(.duration)
+                let offset = CMTime(seconds: cameraOffset ?? 0, preferredTimescale: 600)
+                // A camera that started before the screen loses its head; one that ran past it, its tail.
+                let skip = offset < .zero ? CMTimeMultiply(offset, multiplier: -1) : .zero
+                let at = offset < .zero ? .zero : offset
+                let len = CMTimeMinimum(CMTimeSubtract(camDur, skip), CMTimeSubtract(duration, at))
+                if len > .zero {
+                    try ct.insertTimeRange(CMTimeRange(start: skip, duration: len), of: cv, at: at)
+                    cameraTrack = ct.trackID
+                }
+            }
+        }
+        return Source(asset: comp, screenTrack: st.trackID, cameraTrack: cameraTrack, duration: duration.seconds)
+    }
+
+    static func composition(source: Source, compositor: Compositor, canvas: CGSize) -> AVVideoComposition {
+        let comp = AVMutableVideoComposition()
+        comp.customVideoCompositorClass = CloseupVideoCompositor.self
         comp.renderSize = canvas
         comp.frameDuration = CMTime(value: 1, timescale: 60)
         // Without this, output frames follow the recording's frame times. ScreenCaptureKit only
         // sends frames when the screen changes, so zooms would stutter over still moments.
         comp.sourceTrackIDForFrameTiming = kCMPersistentTrackID_Invalid
+        comp.instructions = [CloseupInstruction(
+            timeRange: CMTimeRange(start: .zero, duration: CMTime(seconds: source.duration, preferredTimescale: 600)),
+            screen: source.screenTrack, camera: source.cameraTrack, compositor: compositor, canvas: canvas)]
         return comp
     }
 
@@ -248,5 +332,57 @@ enum Render {
         defer { watcher.cancel() }
         try await session.export(to: url, as: .mp4)
         progress(1)
+    }
+}
+
+// MARK: - Custom compositor (two video tracks in, one frame out)
+
+final class CloseupInstruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
+    let timeRange: CMTimeRange
+    let enablePostProcessing = false
+    let containsTweening = true   // the camera moves even when no source frame changes
+    let requiredSourceTrackIDs: [NSValue]?
+    let passthroughTrackID = kCMPersistentTrackID_Invalid
+
+    let screen: CMPersistentTrackID
+    let camera: CMPersistentTrackID?
+    let compositor: Compositor
+    let canvas: CGSize
+
+    init(timeRange: CMTimeRange, screen: CMPersistentTrackID, camera: CMPersistentTrackID?, compositor: Compositor, canvas: CGSize) {
+        self.timeRange = timeRange
+        self.screen = screen
+        self.camera = camera
+        self.compositor = compositor
+        self.canvas = canvas
+        requiredSourceTrackIDs = ([screen] + (camera.map { [$0] } ?? [])).map { NSNumber(value: $0) }
+    }
+}
+
+final class CloseupVideoCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
+    let sourcePixelBufferAttributes: [String: any Sendable]? = [
+        kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_32BGRA],
+        kCVPixelBufferMetalCompatibilityKey as String: true,
+    ]
+    let requiredPixelBufferAttributesForRenderContext: [String: any Sendable] = [
+        kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_32BGRA],
+        kCVPixelBufferMetalCompatibilityKey as String: true,
+    ]
+    private let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+
+    func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {}
+
+    func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
+        guard let ins = request.videoCompositionInstruction as? CloseupInstruction,
+              let screenBuffer = request.sourceFrame(byTrackID: ins.screen),
+              let out = request.renderContext.newPixelBuffer() else {
+            request.finish(with: NSError(domain: "Closeup", code: 3))
+            return
+        }
+        let screen = CIImage(cvPixelBuffer: screenBuffer)
+        let camera = ins.camera.flatMap { request.sourceFrame(byTrackID: $0) }.map { CIImage(cvPixelBuffer: $0) }
+        let image = ins.compositor.compose(source: screen, camera: camera, time: request.compositionTime.seconds, canvas: ins.canvas)
+        ins.compositor.context.render(image, to: out, bounds: CGRect(origin: .zero, size: ins.canvas), colorSpace: srgb)
+        request.finish(withComposedVideoFrame: out)
     }
 }

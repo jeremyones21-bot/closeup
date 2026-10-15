@@ -31,6 +31,24 @@ struct Inspector: View {
                 }
             }
 
+            if model.hasCamera {
+                Section("Camera") {
+                    Toggle("Show camera", isOn: $model.edits.style.showCamera)
+                    Group {
+                        Picker("Position", selection: $model.edits.style.cameraCorner) {
+                            ForEach(CameraCorner.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Shape", selection: $model.edits.style.cameraShape) {
+                            ForEach(CameraShape.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        slider("Size", $model.edits.style.cameraSize, 0.12...0.45)
+                        Toggle("Mirror", isOn: $model.edits.style.cameraMirror)
+                    }
+                    .disabled(!model.edits.style.showCamera)
+                }
+            }
+
             Section("Backdrop") {
                 BackdropGrid(selection: $model.edits.style.backdrop)
             }

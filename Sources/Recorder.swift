@@ -30,6 +30,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     private var project: ProjectFolder!
     private var displaySize = CGSize.zero
     private var scale: Double = 2
+    private var camera: CameraRecorder?
 
     var onStreamError: ((Error) -> Void)?
 
@@ -38,8 +39,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     }
 
     @MainActor
-    func start(displayID: CGDirectDisplayID, microphone: Bool, into project: ProjectFolder) async throws {
+    func start(displayID: CGDirectDisplayID, microphone: Bool, camera cameraID: String?? = nil,
+               into project: ProjectFolder) async throws {
         self.project = project
+        // cameraID: nil = no camera, .some(nil) = default camera, .some(id) = that camera.
+        if let cameraID {
+            camera = try CameraRecorder(deviceID: cameraID, to: project.cameraVideo)
+        }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw Failure.noDisplay }
         let me = content.applications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
@@ -102,6 +108,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         cursorTimer = timer
 
         try await stream.startCapture()
+        camera?.start()
     }
 
     @MainActor
@@ -111,6 +118,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         try? await stream?.stopCapture()
         stream = nil
         let stopTime = Self.now()
+        await camera?.stop()
 
         // SCStream only sends frames when something changes. Repeat the last one at the moment
         // we stopped, so a still ending isn't cut off.
@@ -141,7 +149,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
             let t = r[0] - t0
             return t >= -0.05 ? [((t * 1000).rounded() / 1000), r[1], r[2], r[3]] : nil
         }
-        let log = CursorLog(displayWidth: displaySize.width, displayHeight: displaySize.height, scale: scale, samples: rows)
+        var log = CursorLog(displayWidth: displaySize.width, displayHeight: displaySize.height, scale: scale, samples: rows)
+        if let first = camera?.firstFrameTime { log.cameraOffset = first - t0 }
         if let d = try? JSONEncoder().encode(log) { try d.write(to: project.cursorFile, options: .atomic) }
         return project
     }

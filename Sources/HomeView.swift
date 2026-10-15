@@ -34,6 +34,20 @@ struct HomeView: View {
                     .disabled(app.displays.isEmpty)
                     Toggle("Microphone", isOn: $app.microphone)
                 }
+                HStack(spacing: 16) {
+                    Toggle("Camera", isOn: $app.camera)
+                        .disabled(app.cameras.isEmpty)
+                    if app.camera {
+                        Picker("Camera", selection: $app.cameraID) {
+                            ForEach(app.cameras, id: \.id) { c in Text(c.name).tag(Optional(c.id)) }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    if app.cameras.isEmpty {
+                        Text("No camera found").font(.callout).foregroundStyle(.secondary)
+                    }
+                }
                 Text("Closeup hides itself and counts down from 3. Click the timer in the menu bar to stop.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
