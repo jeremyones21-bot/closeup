@@ -124,13 +124,13 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 - [x] Local transcription (Apple's on-device speech recognition; nothing leaves the Mac)
 - [-] Cloud transcription: on-device transcription covers it; no cloud account needed
 - [x] Export captions as .srt (aligned to the edit)
-- [x] AI voiceover: generated on this Mac with the Kokoro voice model already installed, instead of a cloud service
+- [x] AI voiceover: generated locally with the Kokoro TTS model (expects it in ~/.hyperframes-venv and ~/.cache/hyperframes/tts), instead of a cloud service
 
 ## 8. Backgrounds and style
 - [x] Your own image as background
 - [x] macOS wallpapers
 - [x] Gradients (more to come)
-- [~] Unsplash: needs an Unsplash API key from you
+- [~] Unsplash: not built yet; needs an Unsplash API key
 - [x] Padding
 - [x] Shadow angle, distance and softness (strength is done)
 - [x] Inset (frame around the recording)
@@ -157,7 +157,7 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 - [x] Copy exported video to the clipboard
 
 ## 11. Sharing
-- [-] Share links, private links, timestamped comments, view counts: need a hosting server. Can be built on your Vercel account later, but only with your OK before anything is published.
+- [-] Share links, private links, timestamped comments, view counts: not built; they need a hosting server, and Closeup is local-only.
 - [x] Project sharing / download: export the .closeup folder as one file and open it on another Mac
 - [x] Copy to clipboard
 
