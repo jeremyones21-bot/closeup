@@ -37,7 +37,7 @@ struct EditorView: View {
                     }
                     Divider()
                     Inspector(model: model)
-                        .frame(width: 300)
+                        .frame(width: 320)
                 }
             }
         }

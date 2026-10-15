@@ -10,16 +10,40 @@ struct Inspector: View {
         case edit, style, camera, audio, captions
         var id: String { rawValue }
         var label: String { rawValue.capitalized }
+        var symbol: String {
+            switch self {
+            case .edit: "scissors"
+            case .style: "paintpalette"
+            case .camera: "video"
+            case .audio: "waveform"
+            case .captions: "captions.bubble"
+            }
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases.filter { $0 != .camera || model.hasCamera }) { Text($0.label).tag($0) }
+            // Icon tabs with the name underneath: five text segments don't fit the inspector's width.
+            HStack(spacing: 2) {
+                ForEach(Tab.allCases.filter { $0 != .camera || model.hasCamera }) { t in
+                    Button {
+                        tab = t
+                    } label: {
+                        VStack(spacing: 2) {
+                            Image(systemName: t.symbol).font(.system(size: 13))
+                            Text(t.label).font(.system(size: 10))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .contentShape(Rectangle())
+                        .background(RoundedRectangle(cornerRadius: 6).fill(tab == t ? Color.accentColor.opacity(0.18) : .clear))
+                        .foregroundStyle(tab == t ? Color.accentColor : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(t.label)
+                }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(10)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             Divider()
             Form {
                 switch tab {
