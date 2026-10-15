@@ -5,19 +5,21 @@ import SwiftUI
 @main
 struct CloseupApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var app = AppState()
+    @State private var app = AppState.shared
 
     var body: some Scene {
         Window("Closeup", id: "home") {
             HomeView()
                 .environment(app)
-                .onAppear { delegate.app = app }
                 .frame(minWidth: 560, minHeight: 420)
         }
         .defaultSize(width: 640, height: 520)
+        // Always come up with the recordings window, even if it was closed when the app quit.
+        .defaultLaunchBehavior(.presented)
+        .restorationBehavior(.disabled)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Recording") { app.startRecording() }
+                Button("New Recording…") { app.showBar() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(app.phase != .idle)
             }
@@ -38,67 +40,141 @@ struct CloseupApp: App {
 @MainActor
 @Observable
 final class AppState {
+    static let shared = AppState()
+
     enum Phase: Equatable { case idle, countdown(Int), recording, saving }
+    enum SourceMode: String, CaseIterable, Identifiable {
+        case display, window, area
+        var id: String { rawValue }
+        var label: String { rawValue.capitalized }
+        var symbol: String {
+            switch self {
+            case .display: "display"
+            case .window: "macwindow"
+            case .area: "rectangle.dashed"
+            }
+        }
+    }
+    struct WindowChoice: Identifiable, Hashable {
+        let id: CGWindowID
+        let app: String
+        let title: String
+        var label: String { title.isEmpty ? app : "\(app) — \(title)" }
+    }
+    struct Device: Identifiable, Hashable { let id: String; let name: String }
 
     var phase: Phase = .idle
     var projects: [ProjectFolder] = ProjectFolder.all()
-    var displays: [SCDisplay] = []
-    var displayID: CGDirectDisplayID = CGMainDisplayID()
-    var microphone = false
-    var camera = false
-    var cameraID: String?
-    var cameras: [(id: String, name: String)] = []
     var problem: String?
     var needsPermission = false
+
+    // Recording choices, remembered between launches.
+    var mode: SourceMode = SourceMode(rawValue: UserDefaults.standard.string(forKey: "mode") ?? "") ?? .display {
+        didSet { UserDefaults.standard.set(mode.rawValue, forKey: "mode") }
+    }
+    var displays: [SCDisplay] = []
+    var displayID: CGDirectDisplayID = CGMainDisplayID()
+    var windows: [WindowChoice] = []
+    var windowID: CGWindowID?
+    var area: (display: CGDirectDisplayID, rect: CGRect)?
+    var cameras: [Device] = []
+    var microphones: [Device] = []
+    var cameraID: String? = UserDefaults.standard.string(forKey: "cameraID") {
+        didSet { UserDefaults.standard.set(cameraID, forKey: "cameraID") }
+    }
+    var microphoneID: String? = UserDefaults.standard.string(forKey: "microphoneID") {
+        didSet { UserDefaults.standard.set(microphoneID, forKey: "microphoneID") }
+    }
+    var systemAudio = UserDefaults.standard.bool(forKey: "systemAudio") {
+        didSet { UserDefaults.standard.set(systemAudio, forKey: "systemAudio") }
+    }
 
     /// Set by a view that has the openWindow action.
     var openEditor: ((URL) -> Void)?
 
+    let bar = RecordBarController()
     private var recorder: Recorder?
     private var statusItem: NSStatusItem?
     private var started = Date()
     private var ticker: Timer?
 
+    var canRecord: Bool {
+        switch mode {
+        case .display: !displays.isEmpty
+        case .window: windowID != nil
+        case .area: area != nil
+        }
+    }
+
     func refresh() {
         projects = ProjectFolder.all()
-        cameras = CameraRecorder.devices().map { ($0.uniqueID, $0.localizedName) }
+        cameras = CameraRecorder.devices().map { Device(id: $0.uniqueID, name: $0.localizedName) }
+        microphones = Recorder.microphones().map { Device(id: $0.uniqueID, name: $0.localizedName) }
         if let id = cameraID, !cameras.contains(where: { $0.id == id }) { cameraID = nil }
-        if cameraID == nil { cameraID = cameras.first?.id }
+        if let id = microphoneID, !microphones.contains(where: { $0.id == id }) { microphoneID = nil }
         Task {
             do {
-                displays = try await Recorder.displays()
+                let content = try await Recorder.content()
+                displays = content.displays
+                let me = Bundle.main.bundleIdentifier
+                windows = content.windows
+                    .filter { $0.isOnScreen && $0.windowLayer == 0 && $0.frame.width >= 160 && $0.frame.height >= 100
+                        && $0.owningApplication?.bundleIdentifier != me && $0.owningApplication != nil }
+                    .map { WindowChoice(id: $0.windowID, app: $0.owningApplication?.applicationName ?? "Window", title: $0.title ?? "") }
+                    .sorted { ($0.app, $0.title) < ($1.app, $1.title) }
                 needsPermission = false
                 if !displays.contains(where: { $0.displayID == displayID }) { displayID = displays.first?.displayID ?? CGMainDisplayID() }
+                if let w = windowID, !windows.contains(where: { $0.id == w }) { windowID = nil }
             } catch {
                 needsPermission = true
             }
         }
     }
 
-    func displayName(_ d: SCDisplay) -> String {
-        let screen = NSScreen.screens.first {
-            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == d.displayID
+    func displayName(_ id: CGDirectDisplayID) -> String {
+        guard let d = displays.first(where: { $0.displayID == id }) else { return "Display" }
+        return "\(Recorder.screen(for: id)?.localizedName ?? "Display") — \(d.width)×\(d.height)"
+    }
+
+    func showBar() {
+        guard phase == .idle else { return }
+        refresh()
+        bar.show(app: self)
+    }
+
+    func selectArea() {
+        let id = area?.display ?? displayID
+        bar.hide()
+        AreaSelector.shared.begin(display: id, initial: area?.display == id ? area?.rect : nil) { [weak self] result in
+            guard let self else { return }
+            if let result { self.area = result; self.mode = .area }
+            self.bar.show(app: self)
         }
-        return "\(screen?.localizedName ?? "Display") — \(d.width)×\(d.height)"
     }
 
     func startRecording() {
         guard phase == .idle else { return }
         problem = nil
-        if camera {
-            Task {
-                guard await CameraRecorder.requestAccess() else {
-                    problem = "Closeup can't use the camera. Turn it on in System Settings › Privacy & Security › Camera, or switch Camera off."
-                    return
-                }
-                beginCountdown()
+        guard canRecord else {
+            problem = mode == .window ? "Pick a window to record." : "Select an area to record."
+            showBar()
+            return
+        }
+        Task {
+            if cameraID != nil, !(await CameraRecorder.requestAccess()) {
+                problem = "Closeup can't use the camera. Turn it on in System Settings › Privacy & Security › Camera, or choose No Camera."
+                return
             }
-        } else {
+            if microphoneID != nil, !(await AVCaptureDevice.requestAccess(for: .audio)) {
+                problem = "Closeup can't use the microphone. Turn it on in System Settings › Privacy & Security › Microphone, or choose No Microphone."
+                return
+            }
             beginCountdown()
         }
     }
 
     private func beginCountdown() {
+        bar.hide()
         showStatusItem()
         NSApp.hide(nil)
         phase = .countdown(3)
@@ -124,9 +200,15 @@ final class AppState {
                 await self?.stopRecording()
             }
         }
+        let target: CaptureTarget
+        switch mode {
+        case .display: target = .display(displayID)
+        case .window: target = .window(windowID ?? 0)
+        case .area: target = .area(area?.display ?? displayID, area?.rect ?? .zero)
+        }
         do {
-            try await rec.start(displayID: displayID, microphone: microphone,
-                                camera: camera ? .some(cameraID) : nil, into: .makeNew())
+            try await rec.start(CaptureOptions(target: target, microphoneID: microphoneID,
+                                               systemAudio: systemAudio, cameraID: cameraID), into: .makeNew())
             recorder = rec
             started = .now
             phase = .recording
@@ -248,13 +330,19 @@ final class AppState {
     }
 }
 
-/// Answers closeup://record, closeup://stop and closeup://open?path=/path/to/Recording.closeup.
+/// Answers closeup://record, closeup://stop, closeup://bar and closeup://open?path=/path/to/Recording.closeup.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    var app: AppState? {
-        didSet { if let url = pending { pending = nil; handle(url) } }
-    }
+    private var app: AppState? { AppState.shared }
     private var pending: URL?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // URLs can arrive before any window exists; replay once the home window has registered.
+        Task {
+            for _ in 0..<50 where AppState.shared.openEditor == nil { try? await Task.sleep(for: .milliseconds(100)) }
+            if let url = pending { pending = nil; handle(url) }
+        }
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(getURL(_:reply:)),
@@ -264,20 +352,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func getURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: s) else { return }
-        if app?.openEditor == nil { pending = url } else { handle(url) }
+        if app?.openEditor == nil && url.host == "open" { pending = url } else { handle(url) }
     }
 
     private func handle(_ url: URL) {
         switch url.host {
         case "record":
-            // closeup://record?camera=1&mic=1 — flags override the toggles for this take.
+            // closeup://record?camera=1&mic=1&sound=1 — flags override the bar's choices for this take.
             let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-            if let c = q.first(where: { $0.name == "camera" })?.value { app?.camera = c == "1" }
-            if let m = q.first(where: { $0.name == "mic" })?.value { app?.microphone = m == "1" }
-            app?.refresh()
-            app?.startRecording()
+            guard let app else { return }
+            app.refresh()
+            Task {
+                try? await Task.sleep(for: .milliseconds(300))   // let the device lists fill in
+                if let c = q.first(where: { $0.name == "camera" })?.value { app.cameraID = c == "1" ? (app.cameraID ?? app.cameras.first?.id) : nil }
+                if let m = q.first(where: { $0.name == "mic" })?.value { app.microphoneID = m == "1" ? (app.microphoneID ?? app.microphones.first?.id) : nil }
+                if let snd = q.first(where: { $0.name == "sound" })?.value { app.systemAudio = snd == "1" }
+                if q.contains(where: { $0.name == "display" }) { app.mode = .display }
+                app.startRecording()
+            }
             return
         case "stop": Task { await app?.stopRecording() }; return
+        case "bar": app?.showBar(); return
         default: break
         }
         guard url.host == "open",

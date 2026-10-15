@@ -11,45 +11,19 @@ struct HomeView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("New Recording").font(.headline)
+                    Text("Recordings").font(.headline)
                     Spacer()
                     Button {
-                        app.startRecording()
+                        app.showBar()
                     } label: {
-                        Label("Record", systemImage: "record.circle")
-                            .frame(minWidth: 80)
+                        Label("New Recording", systemImage: "record.circle")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
-                    .disabled(app.phase != .idle || app.displays.isEmpty)
+                    .disabled(app.phase != .idle)
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                 }
-                HStack(spacing: 16) {
-                    Picker("Display", selection: $app.displayID) {
-                        ForEach(app.displays, id: \.displayID) { d in
-                            Text(app.displayName(d)).tag(d.displayID)
-                        }
-                    }
-                    .frame(maxWidth: 360, alignment: .leading)
-                    .fixedSize()
-                    .disabled(app.displays.isEmpty)
-                    Toggle("Microphone", isOn: $app.microphone)
-                }
-                HStack(spacing: 16) {
-                    Toggle("Camera", isOn: $app.camera)
-                        .disabled(app.cameras.isEmpty)
-                    if app.camera {
-                        Picker("Camera", selection: $app.cameraID) {
-                            ForEach(app.cameras, id: \.id) { c in Text(c.name).tag(Optional(c.id)) }
-                        }
-                        .labelsHidden()
-                        .fixedSize()
-                    }
-                    if app.cameras.isEmpty {
-                        Text("No camera found").font(.callout).foregroundStyle(.secondary)
-                    }
-                }
-                Text("Closeup hides itself and counts down from 3. Click the timer in the menu bar to stop.")
+                Text("Choose a display, window or area in the bar that appears, then press Record. Click the timer in the menu bar to stop.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
@@ -80,7 +54,7 @@ struct HomeView: View {
                                        description: Text("Recordings are saved in Movies › Closeup."))
             } else {
                 List(selection: $selection) {
-                    Section("Recordings") {
+                    Section {
                         ForEach(app.projects) { p in
                             ProjectRow(project: p, onDelete: { app.delete(p) })
                                 .tag(p.url)
