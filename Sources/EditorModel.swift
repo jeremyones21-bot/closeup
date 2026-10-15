@@ -246,10 +246,14 @@ final class EditorModel {
         }
     }
 
+    /// Set once the recording is in the Trash, so closing doesn't write edits.json back.
+    var discarded = false
+
     func close() {
         player.pause()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
+        timeObserver = nil
         saveTask?.cancel()
-        if loaded { project.save(edits) }
+        if loaded && !discarded { project.save(edits) }
     }
 }

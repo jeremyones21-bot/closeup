@@ -4,6 +4,7 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppState.self) private var app
     @Environment(\.openWindow) private var openWindow
+    @State private var selection = Set<URL>()
 
     var body: some View {
         @Bindable var app = app
@@ -78,23 +79,58 @@ struct HomeView: View {
                 ContentUnavailableView("No Recordings Yet", systemImage: "rectangle.dashed.badge.record",
                                        description: Text("Recordings are saved in Movies › Closeup."))
             } else {
-                List {
+                List(selection: $selection) {
                     Section("Recordings") {
                         ForEach(app.projects) { p in
-                            ProjectRow(project: p)
-                                .contentShape(Rectangle())
-                                .onTapGesture(count: 2) { openWindow(value: p.url) }
-                                .contextMenu {
-                                    Button("Open") { openWindow(value: p.url) }
-                                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([p.url]) }
-                                    Divider()
-                                    Button("Move to Trash", role: .destructive) { app.delete(p) }
-                                }
+                            ProjectRow(project: p, onDelete: { app.delete(p) })
+                                .tag(p.url)
                         }
                     }
                 }
+                .contextMenu(forSelectionType: URL.self) { urls in
+                    if urls.count == 1, let url = urls.first {
+                        Button("Open") { openWindow(value: url) }
+                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        Divider()
+                    }
+                    if !urls.isEmpty {
+                        Button(urls.count > 1 ? "Move \(urls.count) Recordings to Trash" : "Move to Trash", role: .destructive) {
+                            app.delete(app.projects.filter { urls.contains($0.url) })
+                            selection.subtract(urls)
+                        }
+                    }
+                } primaryAction: { urls in
+                    for url in urls { openWindow(value: url) }
+                }
                 .listStyle(.inset)
+                // Delete key (and Edit › Delete) trashes whatever is selected.
+                .onDeleteCommand { deleteSelection() }
             }
+
+            if !app.lastTrashed.isEmpty {
+                Divider()
+                HStack {
+                    Image(systemName: "trash").foregroundStyle(.secondary)
+                    Text(app.lastTrashed.count == 1 ? "Moved 1 recording to the Trash." : "Moved \(app.lastTrashed.count) recordings to the Trash.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Undo") { app.undoDelete() }
+                        .keyboardShortcut("z", modifiers: .command)
+                    Button {
+                        app.lastTrashed = []
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Dismiss")
+                }
+                .font(.callout)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+        }
+        .onChange(of: app.projects) {
+            selection.formIntersection(app.projects.map(\.url))
         }
         .onAppear {
             app.openEditor = { url in openWindow(value: url) }
@@ -106,10 +142,21 @@ struct HomeView: View {
     }
 }
 
+extension HomeView {
+    func deleteSelection() {
+        let targets = app.projects.filter { selection.contains($0.url) }
+        guard !targets.isEmpty else { return }
+        app.delete(targets)
+        selection = []
+    }
+}
+
 struct ProjectRow: View {
     let project: ProjectFolder
+    var onDelete: () -> Void = {}
     @State private var thumb: NSImage?
     @State private var length: Double?
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -131,8 +178,17 @@ struct ProjectRow: View {
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
+            Spacer()
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Move to Trash")
+            .opacity(hovering ? 1 : 0)
         }
         .padding(.vertical, 2)
+        .onHover { hovering = $0 }
         .task(id: project.url) {
             let asset = AVURLAsset(url: project.video)
             length = try? await asset.load(.duration).seconds

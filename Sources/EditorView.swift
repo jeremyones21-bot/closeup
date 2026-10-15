@@ -5,6 +5,9 @@ struct EditorView: View {
     let project: ProjectFolder
     @State private var model: EditorModel
     @State private var showExport = false
+    @State private var confirmTrash = false
+    @Environment(AppState.self) private var app
+    @Environment(\.dismiss) private var dismiss
 
     init(project: ProjectFolder) {
         self.project = project
@@ -38,6 +41,16 @@ struct EditorView: View {
         .navigationTitle(project.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([project.url]) }
+                    Divider()
+                    Button("Move to Trash…", role: .destructive) { confirmTrash = true }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .help("More")
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button {
                     showExport = true
                 } label: {
@@ -49,6 +62,23 @@ struct EditorView: View {
         }
         .sheet(isPresented: $showExport) {
             ExportSheet(model: model)
+        }
+        .confirmationDialog("Move \u{201C}\(project.name)\u{201D} to the Trash?", isPresented: $confirmTrash) {
+            Button("Move to Trash", role: .destructive) {
+                model.discarded = true
+                model.close()
+                app.delete(project)
+                dismiss()
+            }
+        } message: {
+            Text("The recording and its edits go to the Trash. You can put them back from there, or undo in the Closeup window.")
+        }
+        // Deleted from the recordings list while open here: close without saving.
+        .onReceive(NotificationCenter.default.publisher(for: AppState.projectsTrashed)) { note in
+            guard let urls = note.object as? [URL], urls.contains(project.url), !model.discarded else { return }
+            model.discarded = true
+            model.close()
+            dismiss()
         }
         .task { await model.load() }
         .onDisappear { model.close() }

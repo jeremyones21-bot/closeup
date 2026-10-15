@@ -181,8 +181,33 @@ final class AppState {
         problem = msg
     }
 
-    func delete(_ p: ProjectFolder) {
-        try? FileManager.default.trashItem(at: p.url, resultingItemURL: nil)
+    /// What the last delete moved, so it can be undone: (original location, place in the Trash).
+    var lastTrashed: [(from: URL, to: URL)] = []
+
+    static let projectsTrashed = Notification.Name("CloseupProjectsTrashed")
+
+    /// Moves recordings to the Trash (recoverable) and closes any editor showing them.
+    func delete(_ list: [ProjectFolder]) {
+        var moved: [(URL, URL)] = []
+        for p in list {
+            var result: NSURL?
+            if (try? FileManager.default.trashItem(at: p.url, resultingItemURL: &result)) != nil, let to = result as URL? {
+                moved.append((p.url, to))
+            }
+        }
+        guard !moved.isEmpty else { return }
+        lastTrashed = moved
+        NotificationCenter.default.post(name: Self.projectsTrashed, object: moved.map(\.0))
+        projects = ProjectFolder.all()
+    }
+
+    func delete(_ p: ProjectFolder) { delete([p]) }
+
+    func undoDelete() {
+        for item in lastTrashed {
+            try? FileManager.default.moveItem(at: item.to, to: item.from)
+        }
+        lastTrashed = []
         projects = ProjectFolder.all()
     }
 
