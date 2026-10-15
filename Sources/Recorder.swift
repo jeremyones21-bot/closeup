@@ -84,6 +84,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     private var audioStream: SCStream?
     private var latestFrame: CMSampleBuffer?   // newest frame seen, even while paused
     private var flags: [Double] = []
+    private var keyTimes: [Double] = []
+    private var shortcutPresses: [ShortcutPress] = []
+    private var keyMonitor: Any?
     private var lastAutosave = 0.0
     private var writer: AVAssetWriter?
     private var videoIn: AVAssetWriterInput?
@@ -257,6 +260,28 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         try await stream.startCapture()
         try await audioStream?.startCapture()
         camera?.start()
+        startKeyLog()
+    }
+
+    /// With Accessibility allowed, notes when keys are pressed (for speeding up typing) and which
+    /// shortcuts were used (only ⌘ / ⌃ / ⌥ combinations, for the on-screen shortcut display).
+    /// Plain typed characters are never stored.
+    @MainActor
+    private func startKeyLog() {
+        guard AXIsProcessTrusted() else { return }
+        keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, !self.clock.isPaused else { return }
+            let t = self.clock.recordingTime(Self.now())
+            self.keyTimes.append(t)
+            let mods = e.modifierFlags.intersection([.command, .control, .option])
+            guard !mods.isEmpty, let key = HotKeyCombo.label(for: e) else { return }
+            var label = ""
+            if e.modifierFlags.contains(.control) { label += "⌃" }
+            if e.modifierFlags.contains(.option) { label += "⌥" }
+            if e.modifierFlags.contains(.shift) { label += "⇧" }
+            if e.modifierFlags.contains(.command) { label += "⌘" }
+            self.shortcutPresses.append(ShortcutPress(t: t, label: label + key))
+        }
     }
 
     static func displayFilter(_ display: SCDisplay, content: SCShareableContent, hideDesktopIcons: Bool) -> SCContentFilter {
@@ -316,6 +341,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         }
         cursorTimer?.invalidate()
         cursorTimer = nil
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
         try? await stream?.stopCapture()
         try? await audioStream?.stopCapture()
         stream = nil
@@ -362,6 +389,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         var log = CursorLog(displayWidth: capturedSize.width, displayHeight: capturedSize.height, scale: scale, samples: rows)
         if let first = camera?.firstFrameTime { log.cameraOffset = first - t0 }
         if !flags.isEmpty { log.flags = flags.map { (($0 - t0) * 1000).rounded() / 1000 } }
+        if !keyTimes.isEmpty { log.keys = keyTimes.map { (($0 - t0) * 1000).rounded() / 1000 } }
+        if !shortcutPresses.isEmpty { log.shortcuts = shortcutPresses.map { ShortcutPress(t: $0.t - t0, label: $0.label) } }
         return log
     }
 

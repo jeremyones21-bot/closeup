@@ -17,7 +17,7 @@ enum Exporter {
 
     struct Failure: LocalizedError { let message: String; var errorDescription: String? { message } }
 
-    static func export(asset: AVAsset, composition: AVVideoComposition, range: CMTimeRange, settings: Settings,
+    static func export(asset: AVAsset, composition: AVVideoComposition, audioMix: AVAudioMix? = nil, range: CMTimeRange, settings: Settings,
                        to url: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
         try? FileManager.default.removeItem(at: url)
         let reader = try AVAssetReader(asset: asset)
@@ -42,6 +42,8 @@ enum Exporter {
                 AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2,
                 AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
             ])
+            a.audioMix = audioMix
+            a.audioTimePitchAlgorithm = .spectral
             reader.add(a)
             aout = a
         }

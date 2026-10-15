@@ -22,6 +22,14 @@ struct CloseupApp: App {
                 Button("New Recording…") { app.showBar() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(app.phase != .idle)
+                Divider()
+                Button("Import Video…") {
+                    if let p = ProjectShare.importVideo() { app.refresh(); app.openEditor?(p.url) }
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("Open Shared Project…") {
+                    if let p = ProjectShare.importShared() { app.refresh(); app.openEditor?(p.url) }
+                }
             }
         }
 

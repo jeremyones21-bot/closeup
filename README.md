@@ -11,11 +11,16 @@ Needs macOS 15+ and the Xcode command-line tools.
 
 ## How it works
 
-- **Recording** (`Recorder.swift`): ScreenCaptureKit captures one display at 60 fps with the **system cursor hidden** and writes HEVC to `screen.mov`. Separately, the cursor position and button state are polled at 120 Hz on the same host clock and saved to `cursor.json`. Polling `NSEvent.mouseLocation` and `pressedMouseButtons` needs no Accessibility permission.
-- **Camera** (`CameraRecorder.swift`): optional webcam to `camera.mov`, with frame times moved onto the host clock. `cursor.json` stores `cameraOffset` (camera start minus screen start) so the two line up.
-- **Motion** (`Motion.swift`): from the cursor log, it builds per-frame cursor smoothing, the click "press", and the camera (zoom and focus), all through critically damped springs. Auto-zooms group clicks less than 2.5s apart and start 0.7s before the first click.
-- **Compositing** (`Compositor.swift`): one Core Image function turns a source frame into a finished frame: backdrop → shadow → rounded screen → cursor → camera move → webcam bubble (pinned to a corner, not zoomed). Screen and camera go into one `AVMutableComposition`, and a custom `AVVideoCompositing` class feeds both tracks to that function. It drives the live preview (`AVPlayer`) and the export (`AVAssetExportSession`), so what you see is what you get.
-- **Projects** live in `~/Movies/Closeup/<name>.closeup/` as `screen.mov`, `cursor.json` and `edits.json`. The original recording is never modified.
+- **Recording** (`Recorder.swift`, `CameraRecorder.swift`, `DeviceRecorder.swift`): ScreenCaptureKit captures a display, window or area at 60 fps with the system cursor hidden. The cursor (120 Hz), clicks, flags and, with Accessibility, key timings and ⌘/⌃/⌥ shortcuts are logged on the same host clock to `cursor.json`. Microphone and Mac sound (all apps or chosen ones, via a second audio-only stream) go into `screen.mov`; the webcam goes to `camera.mov`. iPhone/iPad recording uses the CoreMediaIO screen-capture device. A shared `PauseClock` removes paused time from every stream. Fragmented MOV and a 2-second cursor autosave make interrupted takes recoverable.
+- **Edit timeline** (`EditTimeline.swift`): trims, cuts and speed changes become pieces of the recording played back to back. The editor shows recording time; playback and export use output time; the compositor maps each output frame back to recording time.
+- **Motion** (`Motion.swift`): per-frame springs for cursor smoothing, click press, classic and loupe zooms (cursor-following or fixed point, instant or eased), hidden-cursor sections, cursor looping, and the velocities motion blur uses.
+- **Compositing** (`Compositor.swift`): one Core Image function draws the whole frame: backdrop (gradient with dithering, wallpaper or image) → shadow and inset → cropped, masked screen → highlights → ripples and cursor → loupe → camera move with motion blur and smart framing → webcam in its layout (animated transitions, cutout via Vision person segmentation, face tracking, crop, look) → captions and shortcut keys. A custom `AVVideoCompositing` feeds it both video tracks for the live preview and for export.
+- **Audio**: voice cleanup renders the mic through Apple's voice-isolation audio unit (Podcast adds EQ, compression and a limiter). Music loops and ducks under speech. Click sounds and Kokoro voiceovers are separate tracks, mixed on export.
+- **Analysis** (`Analyzer.swift`, on device): silences from audio levels, faces from Vision, transcript from on-device speech recognition, then captions, SRT, transcript cuts, filler-word removal and pause shortening.
+- **Export** (`Exporter.swift`): AVAssetReader/Writer with chosen bitrate, frame rate and size; GIF via ImageIO; optional variable frame rate.
+- **Projects** live in the save folder (default `~/Movies/Closeup/<name>.closeup/`). `edits.json` keeps the last 40 versions in `versions/`.
+
+See `FEATURES.md` for the full feature checklist against Screen Studio.
 
 ## URL scheme
 

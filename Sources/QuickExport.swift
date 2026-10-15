@@ -9,25 +9,32 @@ enum QuickExport {
         let log = project.loadCursor()
         let prefs = Prefs.shared
         var edits = project.loadEdits() ?? Edits()
-        let source = try await Render.source(project: project, cameraOffset: log?.cameraOffset)
         if project.loadEdits() == nil {
-            edits = EditorModel.initialEdits(samples: log?.decoded ?? [], duration: source.duration, device: log?.device)
+            let d = try await Render.sourceDuration(project)
+            edits = EditorModel.initialEdits(samples: log?.decoded ?? [], duration: d, device: log?.device)
             project.save(edits)
         }
+        let source = try await Render.source(project: project, cameraOffset: log?.cameraOffset, edits: edits)
         let natural = try await AVURLAsset(url: project.video).loadTracks(withMediaType: .video).first?.load(.naturalSize)
             ?? CGSize(width: 1920, height: 1080)
         let samples = log?.decoded ?? []
-        let motion = Motion(samples: samples, segments: edits.segments, style: edits.style, duration: source.duration)
+        let motion = Motion(samples: samples, segments: edits.segments, style: edits.style, duration: source.sourceDuration,
+                            hidden: edits.cursorHidden, loopEnd: min(edits.trimEnd ?? source.sourceDuration, source.sourceDuration),
+                            loopStart: edits.trimStart)
         let display = log.map { CGSize(width: $0.displayWidth, height: $0.displayHeight) } ?? CGSize(width: natural.width / 2, height: natural.height / 2)
         let comp = Compositor(style: edits.style, motion: motion, displayPoints: display)
-        comp.update(style: edits.style, motion: motion)
+        let offset = log?.cameraOffset ?? 0
+        let faces = project.hasCamera && edits.style.faceTracking ? await Analyzer.cachedFaces(project, offset: offset) : []
+        let silences = edits.style.hideCameraInSilence ? await Analyzer.cachedSilences(project) : []
+        comp.update(style: edits.style, motion: motion,
+                    scene: SceneData(crop: edits.crop, masks: edits.masks, layouts: edits.layouts, captions: project.loadCaptions(),
+                                     shortcuts: log?.shortcuts ?? [], faces: faces, silences: silences))
+        comp.setSuperResolution(prefs.superResolution)
         comp.setDevice(log?.device, hasCursor: !samples.isEmpty)
         let canvas = comp.canvas(source: natural, short: prefs.exportResolution)
         let vc = Render.composition(source: source, compositor: comp, canvas: canvas, fps: prefs.exportFPS)
-        let end = min(edits.trimEnd ?? source.duration, source.duration)
-        let range = CMTimeRange(start: CMTime(seconds: edits.trimStart, preferredTimescale: 600),
-                                end: CMTime(seconds: end, preferredTimescale: 600))
-        try await Exporter.export(asset: source.asset, composition: vc, range: range,
+        let range = CMTimeRange(start: .zero, duration: CMTime(seconds: source.duration, preferredTimescale: 600))
+        try await Exporter.export(asset: source.asset, composition: vc, audioMix: source.audioMix(volume: edits.volume), range: range,
                                   settings: .init(format: prefs.exportFormat, fps: prefs.exportFPS, compression: prefs.compression,
                                                   hevc: false, variableFrameRate: prefs.variableFrameRate),
                                   to: url, progress: progress)

@@ -23,7 +23,7 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 - [x] Recording flags (mark a moment while recording)
 - [x] New-recording defaults (style applied to new projects)
 - [x] iPhone / iPad over USB with device frame
-- [ ] Create a project from an existing video
+- [x] Create a project from an existing video
 
 ### Seen in Screen Studio's own screens
 - [x] Recording bar: Display / Window / Area / Device, camera, microphone, Mac sound, options
@@ -45,7 +45,7 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 - [x] Quick export: format, frame rate, resolution, compression (Studio / Social / Web / Web Low)
 - [x] Quick-export widget after recording
 - [x] Editable shortcuts (their defaults: ⌃⌘↩ start/finish, ⌥⌘P pause, ⌥⌘⌫ restart, ⌃⌥⌘F flag, ⌥⌘3/4/5 display/window/area, ⌥⌘/ notes, ⌥⌘. prompter, ⌥⌘' controls)
-- [ ] Super resolution setting (Off / Fast / Quality): the setting exists, the MetalFX upscaling behind it is still to do
+- [~] Super resolution setting (Off / Fast / Quality): Fast = Lanczos resampling, Quality = Lanczos + sharpening. Not a trained model
 - [x] Variable frame rate export (smaller files for static screens)
 - [-] Usage data: Closeup collects none, so there's no switch
 - [-] Licensing, network certificate and diagnostics upload options: Closeup has no server
@@ -53,95 +53,95 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 ## 2. Zoom and focus
 - [x] Automatic zoom from clicks
 - [x] Manual zoom (add on the timeline)
-- [ ] Manual zoom target (pin a zoom to a spot instead of following the cursor)
-- [ ] Instant zoom (zoom with no ease-in)
+- [x] Manual zoom target (pin a zoom to a spot instead of following the cursor)
+- [x] Instant zoom (zoom with no ease-in)
 - [x] Classic zoom
-- [ ] Loupe zoom
+- [x] Loupe zoom
 - [x] Automatic zoom animation (springs)
 - [x] Timeline zoom editing (move, resize, delete, amount)
-- [ ] Smart framing (keep the cursor clear of the webcam)
+- [x] Smart framing (keep the cursor clear of the webcam)
 - [x] Zoom re-aiming when the aspect ratio changes (camera is computed per canvas)
-- [~] Upscaling: MetalFX spatial upscaling instead of Screen Studio's own trained model
+- [~] Upscaling: Lanczos resampling plus sharpening when zoomed (Settings › Advanced › Super resolution). Screen Studio uses its own trained model; this is not ML super-resolution
 
 ## 3. Cursor
 - [x] Smooth cursor
 - [x] Turn smoothing off (Smoothing 0)
-- [ ] Motion blur
+- [x] Motion blur
 - [x] Cursor size after recording
-- [ ] Cursor style (pointer shapes and colours)
+- [x] Cursor style (pointer shapes and colours)
 - [x] Sharp system cursor at any size
-- [ ] Click effects: circle / ripple (shrink is done)
-- [ ] Click sounds
+- [x] Click effects: circle / ripple (shrink is done)
+- [x] Click sounds
 - [x] Hide when idle
-- [ ] Hide cursor in chosen sections
-- [ ] Loop cursor back to its start
+- [x] Hide cursor in chosen sections
+- [x] Loop cursor back to its start
 
 ## 4. Camera and layouts
 - [x] Camera overlay (corner, size, shape, mirror)
-- [ ] Fullscreen camera layout
-- [ ] Split-screen layout
-- [ ] Screen-only layout (per section)
-- [ ] Camera cutout (background removal with Vision, on device)
-- [ ] Layouts that change over time, with animated transitions
-- [ ] Face tracking (Vision)
-- [ ] Hide camera during silence
-- [ ] Camera crop
-- [ ] Camera colour (looks / LUT)
-- [ ] Camera sharpening
-- [ ] Camera reactions
+- [x] Fullscreen camera layout
+- [x] Split-screen layout
+- [x] Screen-only layout (per section)
+- [x] Camera cutout (background removal with Vision, on device)
+- [x] Layouts that change over time, with animated transitions
+- [x] Face tracking (Vision)
+- [x] Hide camera during silence
+- [x] Camera crop
+- [x] Camera colour (looks / LUT)
+- [x] Camera sharpening
+- [~] Camera reactions: macOS's own Video Effects reactions (hearts, fireworks) are captured with the camera; Closeup doesn't add its own
 
 ## 5. Aspect ratio and social
 - [x] 16:9, 1:1, 9:16 (plus 4:3 and the screen's own shape)
 - [x] Switch aspect ratio after recording
-- [ ] Layout rearrangement per aspect (camera placement)
+- [x] Layout rearrangement per aspect (camera placement)
 - [x] Zoom re-aiming per aspect
-- [ ] Caption and shortcut repositioning per aspect
-- [ ] Instagram Reels / TikTok safe-area preview
+- [x] Caption and shortcut repositioning per aspect
+- [x] Instagram Reels / TikTok safe-area preview
 
 ## 6. Editing
 - [x] Timeline editor, scrubber
 - [x] Trim start and end
-- [ ] Cut sections out
-- [ ] Speed up sections
-- [ ] Automatic typing speed-up
-- [ ] Edit by transcript
-- [ ] Remove filler words
-- [ ] Shorten silences
-- [ ] Crop the recording
-- [ ] Volume controls
-- [ ] Masks (blur / pixelate / solid)
-- [ ] Highlights (dim everything else)
-- [ ] Command menu (⌘K)
-- [ ] Copy frame as image
-- [ ] Project backups and version restore
+- [x] Cut sections out
+- [x] Speed up sections
+- [x] Automatic typing speed-up
+- [x] Edit by transcript
+- [x] Remove filler words
+- [x] Shorten silences
+- [x] Crop the recording
+- [x] Volume controls
+- [x] Masks (blur / pixelate / solid)
+- [x] Highlights (dim everything else)
+- [x] Command menu (⌘K)
+- [x] Copy frame as image
+- [x] Project backups and version restore
 
 ## 7. Audio and captions
-- [ ] Voice cleanup / noise reduction (on device)
-- [ ] Podcast voice mode
-- [ ] Background music, auto-looped and ducked
-- [ ] Automatic captions (on-device speech recognition)
-- [ ] Caption styles and animations
-- [x] Local transcription (planned via on-device speech; nothing leaves the Mac)
+- [x] Voice cleanup / noise reduction (on device)
+- [x] Podcast voice mode
+- [x] Background music, auto-looped and ducked
+- [x] Automatic captions (on-device speech recognition)
+- [x] Caption styles and animations
+- [x] Local transcription (Apple's on-device speech recognition; nothing leaves the Mac)
 - [-] Cloud transcription: on-device transcription covers it; no cloud account needed
-- [ ] Export captions as .srt (aligned to the edit)
-- [~] AI voiceover: generated locally with the Kokoro voice already installed, instead of a cloud service
+- [x] Export captions as .srt (aligned to the edit)
+- [x] AI voiceover: generated on this Mac with the Kokoro voice model already installed, instead of a cloud service
 
 ## 8. Backgrounds and style
-- [ ] Your own image as background
-- [ ] macOS wallpapers
+- [x] Your own image as background
+- [x] macOS wallpapers
 - [x] Gradients (more to come)
 - [~] Unsplash: needs an Unsplash API key from you
 - [x] Padding
-- [ ] Shadow angle, distance and softness (strength is done)
-- [ ] Inset (frame around the recording)
+- [x] Shadow angle, distance and softness (strength is done)
+- [x] Inset (frame around the recording)
 - [x] Presets (save / apply)
 - [x] Preset sharing (export / import a file)
-- [ ] Debanding (dither gradients)
+- [x] Debanding (dither gradients)
 
 ## 9. Privacy
-- [ ] Masks for sensitive data
-- [ ] Context-matched masks (fill from surrounding colour)
-- [ ] Highlights
+- [x] Masks for sensitive data
+- [x] Context-matched masks (fill from surrounding colour)
+- [x] Highlights
 - [x] Local processing, offline-first
 - [x] No analytics at all (so nothing to turn off)
 - [x] No uploads (so no upload consent needed until sharing exists)
@@ -158,7 +158,7 @@ Every feature from Screen Studio's site and guide (as of 2026-10-15), and where 
 
 ## 11. Sharing
 - [-] Share links, private links, timestamped comments, view counts: need a hosting server. Can be built on your Vercel account later, but only with your OK before anything is published.
-- [ ] Project sharing / download: export the .closeup folder as one file and open it on another Mac
+- [x] Project sharing / download: export the .closeup folder as one file and open it on another Mac
 - [x] Copy to clipboard
 
 ## 12. Mac

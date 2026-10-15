@@ -1,16 +1,18 @@
 import Foundation
 
-/// Everything that moves, precomputed per frame: the smoothed cursor, the click "press", and the
-/// camera (zoom + focus). Rebuilt whenever the segments or smoothing change; it's cheap
-/// (a 10-minute take is 36k frames of a few multiplies each).
-struct Motion {
+/// Everything that moves, precomputed per frame of recording time: the smoothed cursor, the click
+/// "press", the camera (zoom + focus) and the loupe. Rebuilt when zooms, smoothing or hidden-cursor
+/// sections change; it's cheap (a 10-minute take is 36k frames of a few multiplies each).
+struct Motion: @unchecked Sendable {
     static let fps = 60.0
 
     let duration: Double
     private var cx: [Float] = [], cy: [Float] = []
     private var press: [Float] = []
-    private var idle: [Float] = []
+    private var alpha: [Float] = []
     private var zoom: [Float] = [], fx: [Float] = [], fy: [Float] = []
+    private var loupe: [Float] = [], loupeScale: [Float] = []
+    let clicks: [CursorSample]
 
     struct Frame {
         var cursorX: Double, cursorY: Double   // normalised, top-left origin
@@ -18,49 +20,74 @@ struct Motion {
         var cursorAlpha: Double
         var zoom: Double
         var focusX: Double, focusY: Double     // normalised
+        var loupe: Double                      // 0…1 (how far the loupe is open)
+        var loupeScale: Double
+        // Per-second rates, for motion blur.
+        var cursorVX: Double = 0, cursorVY: Double = 0
+        var zoomV: Double = 0, focusVX: Double = 0, focusVY: Double = 0
+        /// Clicks in the last half second: (age in seconds, x, y).
+        var ripples: [(Double, Double, Double)] = []
     }
 
-    init(samples: [CursorSample], segments: [ZoomSegment], style: Style, duration: Double) {
+    init(samples: [CursorSample], segments: [ZoomSegment], style: Style, duration: Double,
+         hidden: [Span] = [], loopEnd: Double? = nil, loopStart: Double = 0) {
         self.duration = max(duration, 0.01)
         let n = Int((self.duration * Self.fps).rounded(.up)) + 1
         let dt = 1 / Self.fps
-        cx.reserveCapacity(n); cy.reserveCapacity(n); press.reserveCapacity(n)
-        idle.reserveCapacity(n); zoom.reserveCapacity(n); fx.reserveCapacity(n); fy.reserveCapacity(n)
+        var wasDown = false
+        var found: [CursorSample] = []
+        for s in samples { if s.down && !wasDown { found.append(s) }; wasDown = s.down }
+        clicks = found
 
         let cursorTime = 0.015 + style.cursorSmoothing * 0.16
         var x = Spring(samples.first?.x ?? 0.5), y = Spring(samples.first?.y ?? 0.5)
-        var p = Spring(0)
+        var p = Spring(0), a = Spring(1)
         var z = Spring(1), fxs = Spring(0.5), fys = Spring(0.5)
+        var lo = Spring(0), ls = Spring(2)
         var lastMove = 0.0
         var lastRaw = (samples.first?.x ?? 0.5, samples.first?.y ?? 0.5)
         var idx = 0
+        var loopHint = 0
+        let home = Self.cursor(at: loopStart, in: samples, hint: &loopHint)
 
         for i in 0..<n {
             let t = Double(i) * dt
-            let raw = Self.cursor(at: t, in: samples, hint: &idx)
+            var raw = Self.cursor(at: t, in: samples, hint: &idx)
+
+            // Loop: glide back to where the cursor was at the start, over the last 0.8 s.
+            if style.loopCursor, let end = loopEnd, t > end - 0.8 {
+                let u = min(1, (t - (end - 0.8)) / 0.6)
+                let e = u * u * (3 - 2 * u)
+                raw.x += (home.x - raw.x) * e
+                raw.y += (home.y - raw.y) * e
+                raw.down = false
+            }
 
             if abs(raw.x - lastRaw.0) > 0.0005 || abs(raw.y - lastRaw.1) > 0.0005 || raw.down { lastMove = t }
             lastRaw = (raw.x, raw.y)
 
-            cx.append(Float(x.step(to: raw.x, time: cursorTime, dt: dt)))
-            cy.append(Float(y.step(to: raw.y, time: cursorTime, dt: dt)))
+            let sx = style.cursorSmoothing <= 0.001 ? raw.x : x.step(to: raw.x, time: cursorTime, dt: dt)
+            let sy = style.cursorSmoothing <= 0.001 ? raw.y : y.step(to: raw.y, time: cursorTime, dt: dt)
+            cx.append(Float(sx)); cy.append(Float(sy))
             press.append(Float(p.step(to: raw.down ? 1 : 0, time: 0.045, dt: dt)))
-            let hidden = style.hideIdleCursor && t - lastMove > 2.5
-            idle.append(hidden ? 0 : 1)
+            let idleHidden = style.hideIdleCursor && t - lastMove > 2.5
+            let spanHidden = hidden.contains { t >= $0.start && t < $0.end }
+            alpha.append(Float(a.step(to: idleHidden || spanHidden ? 0 : 1, time: 0.1, dt: dt)))
 
-            // Camera. Inside a segment, zoom in and drift toward the cursor; outside, sit centred.
+            // Camera. Inside a classic zoom: zoom in on the cursor (or the zoom's fixed point).
+            // Inside a loupe zoom: the camera stays put and a magnifier opens at the cursor.
             let seg = segments.first { t >= $0.start && t < $0.end }
-            let targetZ = seg?.scale ?? 1
-            let targetX = seg == nil ? 0.5 : Double(cx[i])
-            let targetY = seg == nil ? 0.5 : Double(cy[i])
-            zoom.append(Float(z.step(to: targetZ, time: 0.32, dt: dt)))
-            fx.append(Float(fxs.step(to: targetX, time: seg == nil ? 0.32 : 0.55, dt: dt)))
-            fy.append(Float(fys.step(to: targetY, time: seg == nil ? 0.32 : 0.55, dt: dt)))
-        }
-        // Fade the cursor rather than popping it when hiding idle cursors.
-        if style.hideIdleCursor {
-            var a = Spring(1)
-            for i in idle.indices { idle[i] = Float(a.step(to: Double(idle[i]), time: 0.12, dt: dt)) }
+            let classic = seg?.kind == .classic ? seg : nil
+            let fast = seg?.instant == true || segments.contains { $0.instant && abs(t - $0.end) < 0.05 }
+            let zt = fast ? 0.001 : 0.32
+            let targetX = classic.map { $0.focus.map { Double($0.x) } ?? sx } ?? 0.5
+            let targetY = classic.map { $0.focus.map { Double($0.y) } ?? sy } ?? 0.5
+            zoom.append(Float(z.step(to: classic?.scale ?? 1, time: zt, dt: dt)))
+            fx.append(Float(fxs.step(to: targetX, time: fast ? 0.001 : (classic == nil ? 0.32 : 0.55), dt: dt)))
+            fy.append(Float(fys.step(to: targetY, time: fast ? 0.001 : (classic == nil ? 0.32 : 0.55), dt: dt)))
+            let isLoupe = seg?.kind == .loupe
+            loupe.append(Float(lo.step(to: isLoupe ? 1 : 0, time: fast ? 0.001 : 0.18, dt: dt)))
+            loupeScale.append(Float(ls.step(to: isLoupe ? (seg?.scale ?? 2) : Double(loupeScale.last ?? 2), time: 0.2, dt: dt)))
         }
     }
 
@@ -69,8 +96,16 @@ struct Motion {
         let i = Int(f), j = min(i + 1, cx.count - 1)
         let u = Float(f - Double(i))
         func lerp(_ a: [Float]) -> Double { Double(a[i] + (a[j] - a[i]) * u) }
-        return Frame(cursorX: lerp(cx), cursorY: lerp(cy), press: lerp(press), cursorAlpha: lerp(idle),
-                     zoom: lerp(zoom), focusX: lerp(fx), focusY: lerp(fy))
+        func rate(_ a: [Float]) -> Double { i > 0 ? Double(a[i] - a[i - 1]) * Self.fps : 0 }
+        var fr = Frame(cursorX: lerp(cx), cursorY: lerp(cy), press: lerp(press), cursorAlpha: lerp(alpha),
+                       zoom: lerp(zoom), focusX: lerp(fx), focusY: lerp(fy), loupe: lerp(loupe), loupeScale: lerp(loupeScale))
+        fr.cursorVX = rate(cx); fr.cursorVY = rate(cy)
+        fr.zoomV = rate(zoom); fr.focusVX = rate(fx); fr.focusVY = rate(fy)
+        fr.ripples = clicks.compactMap { c in
+            let age = t - c.t
+            return age >= 0 && age < 0.5 ? (age, c.x, c.y) : nil
+        }
+        return fr
     }
 
     /// Linear interpolation over the raw log. `hint` walks forward with t so the whole pass is O(n).
@@ -100,7 +135,7 @@ struct Motion {
             if let last = groups.last?.last, c - last < 2.5 { groups[groups.count - 1].append(c) }
             else { groups.append([c]) }
         }
-        var segs: [ZoomSegment] = groups.map {
+        let segs: [ZoomSegment] = groups.map {
             ZoomSegment(start: max(0, $0.first! - 0.7), end: min(duration, $0.last! + 1.8), scale: 2.0)
         }
         // Merge zooms that would only briefly pull out between them.
@@ -113,8 +148,30 @@ struct Motion {
                 merged.append(s)
             }
         }
-        segs = merged
-        return segs
+        return merged
+    }
+
+    /// Stretches of steady typing (3+ keys a second for 2+ seconds), to speed up.
+    static func typingSpans(keys: [Double]) -> [Span] {
+        var spans: [Span] = []
+        var start: Double?
+        var last = 0.0, count = 0
+        for k in keys.sorted() {
+            if let s = start, k - last < 0.6 {
+                count += 1
+                last = k
+                _ = s
+            } else {
+                if let s = start, last - s >= 2, Double(count) / max(last - s, 0.1) >= 3 {
+                    spans.append(Span(start: s, end: last, rate: 3))
+                }
+                start = k
+                last = k
+                count = 1
+            }
+        }
+        if let s = start, last - s >= 2, Double(count) / max(last - s, 0.1) >= 3 { spans.append(Span(start: s, end: last, rate: 3)) }
+        return spans
     }
 }
 

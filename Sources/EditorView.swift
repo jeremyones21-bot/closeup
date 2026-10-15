@@ -6,6 +6,8 @@ struct EditorView: View {
     @State private var model: EditorModel
     @State private var showExport = false
     @State private var confirmTrash = false
+    @State private var showCommands = false
+    @State private var reelPreview: ReelOverlay.Kind = .off
     @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
 
@@ -26,11 +28,12 @@ struct EditorView: View {
                         PlayerView(player: model.player)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Color(nsColor: .underPageBackgroundColor))
+                            .overlay { PreviewOverlay(model: model, reel: reelPreview) }
                         Divider()
                         TransportBar(model: model)
                         Divider()
                         TimelineView(model: model)
-                            .frame(height: 96)
+                            .frame(height: CGFloat(model.hasCamera ? 5 : 4) * 30 + 44)
                     }
                     Divider()
                     Inspector(model: model)
@@ -42,6 +45,14 @@ struct EditorView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button("Command Menu…") { showCommands = true }
+                    Button("Copy Frame") { Task { await copyFrame() } }
+                    Picker("Social Preview", selection: $reelPreview) {
+                        ForEach(ReelOverlay.Kind.allCases) { Text($0.label).tag($0) }
+                    }
+                    Divider()
+                    Button("Share Project…") { ProjectShare.export(project) }
+                    Button("Restore Earlier Version…") { ProjectShare.restore(project) { model.edits = $0 } }
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([project.url]) }
                     Divider()
                     Button("Move to Trash…", role: .destructive) { confirmTrash = true }
@@ -62,6 +73,14 @@ struct EditorView: View {
         }
         .sheet(isPresented: $showExport) {
             ExportSheet(model: model)
+        }
+        .sheet(isPresented: $showCommands) {
+            CommandMenu(model: model, export: { showExport = true }, copyFrame: { Task { await copyFrame() } })
+        }
+        .background {
+            // ⌘K, like Screen Studio's command menu; ⇧⌘C copies the current frame.
+            Button("") { showCommands = true }.keyboardShortcut("k", modifiers: .command).hidden()
+            Button("") { Task { await copyFrame() } }.keyboardShortcut("c", modifiers: [.command, .shift]).hidden()
         }
         .confirmationDialog("Move \u{201C}\(project.name)\u{201D} to the Trash?", isPresented: $confirmTrash) {
             Button("Move to Trash", role: .destructive) {
@@ -89,15 +108,25 @@ struct EditorView: View {
             return .handled
         }
         .onKeyPress(.delete) {
-            guard model.selected != nil else { return .ignored }
+            guard model.selection != nil else { return .ignored }
             model.deleteSelected()
             return .handled
         }
         .onKeyPress(.deleteForward) {
-            guard model.selected != nil else { return .ignored }
+            guard model.selection != nil else { return .ignored }
             model.deleteSelected()
             return .handled
         }
+        .onKeyPress("z") { model.add(.zoom, at: model.currentTime); return .handled }
+        .onKeyPress("c") { model.add(.clip, at: model.currentTime); return .handled }
+        .onKeyPress(.leftArrow) { model.seek(to: model.currentTime - 1.0 / 30); return .handled }
+        .onKeyPress(.rightArrow) { model.seek(to: model.currentTime + 1.0 / 30); return .handled }
+    }
+
+    private func copyFrame() async {
+        guard let img = await model.currentFrameImage() else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([img])
     }
 }
 
