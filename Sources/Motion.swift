@@ -127,9 +127,14 @@ struct Motion: @unchecked Sendable {
         var level = 1.0
         for s in segs where t >= s.start && t < s.end {
             let r = rampTime(s)
+            // Back-to-back zooms hand over without zooming out: the camera pans across instead.
+            let joinedBefore = segs.contains { $0.id != s.id && abs($0.end - s.start) < 0.05 }
+            let joinedAfter = segs.contains { $0.id != s.id && abs($0.start - s.end) < 0.05 }
             // In: spring from the start. Out: the same spring run forward from (end − r), so it
             // leaves quickly and lands softly on the full view right at the end.
-            let p = r == 0 ? 1 : min(snap((t - s.start) / r), 1 - snap((t - (s.end - r)) / r))
+            let pin = joinedBefore ? 1 : snap((t - s.start) / r)
+            let pout = joinedAfter ? 1 : 1 - snap((t - (s.end - r)) / r)
+            let p = r == 0 ? 1 : min(pin, pout)
             level = max(level, 1 + (s.scale - 1) * p)
         }
         return level
@@ -178,35 +183,97 @@ struct Motion: @unchecked Sendable {
         return CursorSample(t: t, x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, down: a.down)
     }
 
-    /// Zooms where the clicking happens. Clicks less than 2.5s apart share one zoom; each zoom
-    /// starts a beat before the first click and holds a little after the last.
+    /// Where to zoom, from what happened while recording.
+    ///
+    /// Cues: clicks (inside the recording, not the menu bar, not the final Stop click), plus
+    /// moments where the cursor comes to rest on something for a while without clicking.
+    /// A cue joins the current zoom only if it's soon after the last one *and* close enough to
+    /// still be on screen at that zoom; a cue elsewhere starts a new zoom instead of dragging the
+    /// camera across the whole screen. Each zoom lands as its first click happens, holds a beat
+    /// after the last, and is capped so nothing stays zoomed for ages.
     static func autoSegments(samples: [CursorSample], duration: Double) -> [ZoomSegment] {
-        var clicks: [Double] = []
+        struct Cue { var t: Double; var x: Double; var y: Double; var weight: Double }
+        var cues: [Cue] = []
+
+        // Clicks.
         var wasDown = false
         for s in samples {
-            // Ignore the menu bar (that's where Stop lives) and the last second (the Stop click).
-            if s.down && !wasDown && s.y > 0.035 && s.t < duration - 1.0 && s.t > 0.3 { clicks.append(s.t) }
+            if s.down && !wasDown, s.t > 0.3, s.t < duration - 1.0,
+               s.x >= 0, s.x <= 1, s.y >= 0.035, s.y <= 1 {
+                cues.append(Cue(t: s.t, x: s.x, y: s.y, weight: 1))
+            }
             wasDown = s.down
         }
-        var groups: [[Double]] = []
-        for c in clicks {
-            if let last = groups.last?.last, c - last < 2.5 { groups[groups.count - 1].append(c) }
-            else { groups.append([c]) }
+
+        // Rests: the cursor travels somewhere, then stays within a small radius for 0.6–3 s.
+        var runStart = 0
+        func closeRun(_ a: Int, _ b: Int) {
+            guard b - a >= 2 else { return }
+            let d = samples[b - 1].t - samples[a].t
+            guard d >= 0.6, d <= 3 else { return }
+            let mid = (samples[a].t + samples[b - 1].t) / 2
+            guard mid > 0.5, mid < duration - 1.5 else { return }
+            let xs = samples[a..<b].map(\.x), ys = samples[a..<b].map(\.y)
+            let x = xs.reduce(0, +) / Double(xs.count), y = ys.reduce(0, +) / Double(ys.count)
+            guard x >= 0, x <= 1, y >= 0.035, y <= 1 else { return }
+            // Only count rests that follow real travel (not idling where it already was).
+            let before = samples[max(0, a - 30)..<a]
+            let travelled = before.contains { hypot($0.x - x, $0.y - y) > 0.12 }
+            if travelled { cues.append(Cue(t: samples[a].t + 0.15, x: x, y: y, weight: 0.5)) }
         }
-        let segs: [ZoomSegment] = groups.map {
-            ZoomSegment(start: max(0, $0.first! - 0.7), end: min(duration, $0.last! + 1.8), scale: 2.0)
-        }
-        // Merge zooms that would only briefly pull out between them.
-        var merged: [ZoomSegment] = []
-        for s in segs where s.end - s.start > 0.4 {
-            if var last = merged.last, s.start - last.end < 1.0 {
-                last.end = max(last.end, s.end)
-                merged[merged.count - 1] = last
-            } else {
-                merged.append(s)
+        for i in 1..<max(samples.count, 1) {
+            if hypot(samples[i].x - samples[runStart].x, samples[i].y - samples[runStart].y) > 0.02 {
+                closeRun(runStart, i)
+                runStart = i
             }
         }
-        return merged
+        if !samples.isEmpty { closeRun(runStart, samples.count) }
+        cues.sort { $0.t < $1.t }
+        // A rest right before or after a click is the same moment; keep the click.
+        cues = cues.filter { c in c.weight == 1 || !cues.contains { $0.weight == 1 && abs($0.t - c.t) < 1.5 } }
+
+        // Group cues that are close in time and in place.
+        let scale = 2.0
+        let reach = 0.5 / scale * 0.8          // how far apart two points can be and both stay in view
+        var groups: [[Cue]] = []
+        for c in cues {
+            if var g = groups.last, let last = g.last, c.t - last.t < 3.0 {
+                let cx = g.map(\.x).reduce(0, +) / Double(g.count), cy = g.map(\.y).reduce(0, +) / Double(g.count)
+                if abs(c.x - cx) < reach && abs(c.y - cy) < reach {
+                    g.append(c)
+                    groups[groups.count - 1] = g
+                    continue
+                }
+            }
+            groups.append([c])
+        }
+        // A lone rest is a weak cue; only rests that come with clicks, or long ones, make zooms.
+        groups = groups.filter { $0.contains { $0.weight == 1 } || $0.count >= 2 }
+
+        var segs: [ZoomSegment] = []
+        var centers: [(Double, Double)] = []
+        for g in groups {
+            let first = g.first!.t, last = g.last!.t
+            let cx = g.map(\.x).reduce(0, +) / Double(g.count), cy = g.map(\.y).reduce(0, +) / Double(g.count)
+            // Land as the first click happens (the zoom takes ~0.45 s), hold 1.8 s after the last,
+            // and stay at least 2.4 s so it reads as a deliberate zoom, not a twitch.
+            let start = max(0, first - 0.5)
+            var end = min(duration - 0.3, max(last + 1.8, start + 2.4))
+            end = min(end, start + 9)
+            guard end - start > 1.0 else { continue }
+            if let prev = segs.last, let pc = centers.last, start < prev.end + 1.2 {
+                if hypot(cx - pc.0, cy - pc.1) < 0.45 {
+                    // Nearby and soon: one longer zoom; the camera follows across.
+                    segs[segs.count - 1].end = min(max(prev.end, end), prev.start + 12)
+                    centers[centers.count - 1] = ((pc.0 + cx) / 2, (pc.1 + cy) / 2)
+                } // Far away and soon: there's no time to zoom out and back in, and chasing it
+                  // means a whip pan across the screen. Stay with the earlier zoom and skip this one.
+                continue
+            }
+            segs.append(ZoomSegment(start: start, end: end, scale: scale))
+            centers.append((cx, cy))
+        }
+        return segs
     }
 
     /// Stretches of steady typing (3+ keys a second for 2+ seconds), to speed up.

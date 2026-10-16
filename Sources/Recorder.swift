@@ -284,14 +284,19 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         }
     }
 
+    /// Leaves out every Closeup window, including ones that only appear after recording starts
+    /// (the recording controls, the dimming, speaker notes). Excluding windows one by one only
+    /// covers the ones that exist at the start, so it's done by app instead.
     static func displayFilter(_ display: SCDisplay, content: SCShareableContent, hideDesktopIcons: Bool) -> SCContentFilter {
         let me = Bundle.main.bundleIdentifier
-        // Our own windows (bar, notes, status item) and, if asked, Finder's desktop-icon layer.
-        let hidden = content.windows.filter { w in
-            let owner = w.owningApplication?.bundleIdentifier
-            return owner == me || (hideDesktopIcons && owner == "com.apple.finder" && w.windowLayer < 0)
+        var apps = content.applications.filter { $0.bundleIdentifier == me }
+        var keep: [SCWindow] = []
+        if hideDesktopIcons, let finder = content.applications.first(where: { $0.bundleIdentifier == "com.apple.finder" }) {
+            // Leave Finder out too, except its ordinary windows: that drops only the desktop icons.
+            apps.append(finder)
+            keep = content.windows.filter { $0.owningApplication?.bundleIdentifier == "com.apple.finder" && $0.windowLayer >= 0 }
         }
-        return SCContentFilter(display: display, excludingWindows: hidden)
+        return SCContentFilter(display: display, excludingApplications: apps, exceptingWindows: keep)
     }
 
     // MARK: Pause, flags
