@@ -219,8 +219,16 @@ final class Compositor: @unchecked Sendable {
         let (fx, fy) = mapIntoCrop(f.focusX, f.focusY, scene.crop)
         let focus = Compositor.toCanvas(fx, fy, screen: screen)
         let vw = W / z, vh = H / z
-        var ox = min(max(focus.x - vw / 2, 0), W - vw)
-        var oy = min(max(focus.y - vh / 2, 0), H - vh)
+        // Keep the view on the recording: once the zoomed view is smaller than the screen it
+        // never shows the backdrop past the screen's edge. Before that, the screen stays whole.
+        func fit(_ v: Double, _ lo: Double, _ hi: Double, _ size: Double) -> (Double, Double) {
+            v <= hi - lo ? (lo, hi - v) : (max(0, hi - v), min(size - v, lo))
+        }
+        let xr = fit(vw, screen.minX, screen.maxX, W), yr = fit(vh, screen.minY, screen.maxY, H)
+        func clampX(_ x: Double) -> Double { min(max(x, xr.0), xr.1) }
+        func clampY(_ y: Double) -> Double { min(max(y, yr.0), yr.1) }
+        var ox = clampX(focus.x - vw / 2)
+        var oy = clampY(focus.y - vh / 2)
         // Smart framing: never let the webcam bubble sit on top of the cursor.
         if let cam = cameraRect {
             let (cx, cy) = mapIntoCrop(f.cursorX, f.cursorY, scene.crop)
@@ -231,7 +239,7 @@ final class Compositor: @unchecked Sendable {
                 // Push the view so the cursor clears the bubble on the side away from it.
                 let dx = cam.midX < W / 2 ? (guardRect.maxX - onScreen.x) / z : -(onScreen.x - guardRect.minX) / z
                 let dy = cam.midY < H / 2 ? (guardRect.maxY - onScreen.y) / z : -(onScreen.y - guardRect.minY) / z
-                if abs(dx) < abs(dy) { ox = min(max(ox - dx, 0), W - vw) } else { oy = min(max(oy - dy, 0), H - vh) }
+                if abs(dx) < abs(dy) { ox = clampX(ox - dx) } else { oy = clampY(oy - dy) }
             }
         }
         return (CGPoint(x: ox, y: oy), z)
