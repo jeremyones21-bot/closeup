@@ -42,19 +42,16 @@ struct Motion: @unchecked Sendable {
         let cursorTime = 0.015 + style.cursorSmoothing * 0.16
         var x = Spring(samples.first?.x ?? 0.5), y = Spring(samples.first?.y ?? 0.5)
         var p = Spring(0), a = Spring(1)
-        var z = Spring(1), fxs = Spring(0.5), fys = Spring(0.5)
         var lo = Spring(0), ls = Spring(2)
         var lastMove = 0.0
         var lastRaw = (samples.first?.x ?? 0.5, samples.first?.y ?? 0.5)
         var idx = 0
         // Camera aim, held between zooms so zooming out doesn't swing back to the centre.
         var aimX = 0.5, aimY = 0.5
-        var aimedAt: UUID?
-        // Zooms cut short because the cursor left the view (id → new end), and how long it's been out.
-        var cutShort: [UUID: Double] = [:]
-        var outFor = 0.0
-        var live = segments.filter { $0.kind == .classic }
-        let classics = segments.filter { $0.kind == .classic }
+        let groups = Dictionary(uniqueKeysWithValues: segments.filter { $0.kind == .classic && $0.focus == nil }
+            .map { ($0.id, Self.activityGroups(samples: samples, in: $0)) })
+        var panX = PhysicalSpring(0.5), panY = PhysicalSpring(0.5)
+        let live = segments.filter { $0.kind == .classic }
         var loopHint = 0
         let home = Self.cursor(at: loopStart, in: samples, hint: &loopHint)
 
@@ -82,55 +79,25 @@ struct Motion: @unchecked Sendable {
             let spanHidden = hidden.contains { t >= $0.start && t < $0.end }
             alpha.append(Float(a.step(to: idleHidden || spanHidden ? 0 : 1, time: 0.1, dt: dt)))
 
-            // Camera. A classic zoom eases in over up to 0.9 s and out the same way, ending exactly
-            // when the segment does. Inside it, the camera aims where the action will be (the
-            // cursor a moment ahead), then only moves when the cursor nears the edge of the view.
+            // Camera, as Screen Studio does it ("follow click groups"). The cursor activity inside a
+            // zoom is split into groups that each fit in half the zoomed view; the camera aims at
+            // the centre of the group happening now, so it holds still while you work in one place
+            // and pans once when you move on. The pan is Screen Studio's own spring.
             let seg = segments.first { t >= $0.start && t < $0.end }
-            var classic = seg?.kind == .classic ? seg : nil
-            if let c = classic, let e = cutShort[c.id], t >= e { classic = nil }
+            let classic = seg?.kind == .classic ? seg : nil
             let level = Self.zoomLevel(at: t, live)
-            _ = classics
             zoom.append(Float(level))
             if let c = classic {
                 if let f = c.focus {
                     aimX = Double(f.x); aimY = Double(f.y)
-                } else {
-                    if aimedAt != c.id {
-                        aimedAt = c.id
-                        var h = 0
-                        let ahead = Self.cursor(at: min(c.end, c.start + Self.rampTime(c) + 0.15), in: samples, hint: &h)
-                        aimX = ahead.x; aimY = ahead.y
-                    }
-                    // Cursor fled the view for a while (a fling across the screen): ease out now rather
-                    // than chase it, like Screen Studio does.
-                    if !Self.landing(c, t), cutShort[c.id] == nil {
-                        let half = 0.5 / max(level, 1)
-                        let vx = min(max(fxs.value, half), 1 - half), vy = min(max(fys.value, half), 1 - half)
-                        let out = abs(sx - vx) > half * 1.05 || abs(sy - vy) > half * 1.05
-                        outFor = out ? outFor + dt : 0
-                        if outFor > 0.3, let i = live.firstIndex(where: { $0.id == c.id }) {
-                            let end = min(c.end, t + Self.rampTime(c))
-                            cutShort[c.id] = end
-                            live[i].end = end
-                        }
-                    }
-                    // Dead zone: the cursor can roam the middle of the view without moving the camera.
-                    // Not while the zoom is still landing: re-aiming mid-landing reads as a lurch.
-                    let reach = Self.landing(c, t) || cutShort[c.id] != nil ? 1.0 : 0.5 / c.scale * 0.55
-                    let dx = sx - aimX, dy = sy - aimY
-                    if abs(dx) > reach { aimX += dx - (dx > 0 ? reach : -reach) }
-                    if abs(dy) > reach { aimY += dy - (dy > 0 ? reach : -reach) }
+                } else if let g = groups[c.id], let now = Self.group(at: t, in: g) {
+                    aimX = now.x; aimY = now.y
                 }
             }
             // Fully zoomed out, the aim is invisible: jump it so the next zoom heads straight in.
-            if level < 1.01 { fxs = Spring(aimX); fys = Spring(aimY) }
-            // Glide, never lurch: a soft follow, and on-screen pan speed capped at 1.2 screen-widths/s.
-            let instant = classic?.instant == true
-            let follow = instant ? 0.001 : 0.3
-            let cap = instant ? .infinity : 1.5 / max(level, 1)
-            fx.append(Float(fxs.step(to: aimX, time: follow, dt: dt, maxSpeed: cap)))
-            fy.append(Float(fys.step(to: aimY, time: follow, dt: dt, maxSpeed: cap)))
-            _ = z
+            if level < 1.01 || classic?.instant == true { panX = PhysicalSpring(aimX); panY = PhysicalSpring(aimY) }
+            fx.append(Float(panX.step(to: aimX, dt: dt)))
+            fy.append(Float(panY.step(to: aimY, dt: dt)))
             let fast = seg?.instant == true
             let isLoupe = seg?.kind == .loupe
             loupe.append(Float(lo.step(to: isLoupe ? 1 : 0, time: fast ? 0.001 : 0.18, dt: dt)))
@@ -138,7 +105,52 @@ struct Motion: @unchecked Sendable {
         }
     }
 
-    private static func landing(_ c: ZoomSegment, _ t: Double) -> Bool { t < c.start + rampTime(c) }
+    struct ActivityGroup { var start: Double; var x: Double; var y: Double }
+
+    /// Screen Studio's click groups for one zoom: cursor positions (thinned to moves of ~10 px,
+    /// clicks always kept) taken in order, a new group starting whenever the next one would make
+    /// the group wider or taller than half of what's visible at that zoom. Each group's centre is
+    /// weighted by how long the cursor spent at each point.
+    static func activityGroups(samples: [CursorSample], in seg: ZoomSegment) -> [ActivityGroup] {
+        var h = 0
+        var events: [CursorSample] = [cursor(at: seg.start, in: samples, hint: &h)]
+        var wasDown = events[0].down
+        for s in samples where s.t > seg.start && s.t < seg.end {
+            let last = events[events.count - 1]
+            if s.down != wasDown || hypot(s.x - last.x, s.y - last.y) >= 0.003 { events.append(s) }
+            wasDown = s.down
+        }
+        let maxSpan = 0.5 / max(seg.scale, 1)
+        var groups: [[CursorSample]] = []
+        var minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0
+        for e in events {
+            if var g = groups.last,
+               max(maxX, e.x) - min(minX, e.x) <= maxSpan, max(maxY, e.y) - min(minY, e.y) <= maxSpan {
+                g.append(e)
+                groups[groups.count - 1] = g
+                minX = min(minX, e.x); maxX = max(maxX, e.x); minY = min(minY, e.y); maxY = max(maxY, e.y)
+            } else {
+                groups.append([e])
+                minX = e.x; maxX = e.x; minY = e.y; maxY = e.y
+            }
+        }
+        return groups.enumerated().map { i, g in
+            let finish = i + 1 < groups.count ? groups[i + 1][0].t : nil
+            var w = 0.0, sx = 0.0, sy = 0.0
+            for (k, e) in g.enumerated() {
+                let next = k + 1 < g.count ? g[k + 1].t : (finish ?? e.t + 0.1)
+                let d = max(next - e.t, 0)
+                w += d; sx += e.x * d; sy += e.y * d
+            }
+            return w > 0 ? ActivityGroup(start: g[0].t, x: sx / w, y: sy / w)
+                         : ActivityGroup(start: g[0].t, x: g[0].x, y: g[0].y)
+        }
+    }
+
+    /// The group under way at t (the latest one that has started), else the first one.
+    static func group(at t: Double, in groups: [ActivityGroup]) -> ActivityGroup? {
+        groups.last { $0.start <= t } ?? groups.first
+    }
 
     /// How long a zoom takes to land: about half a second, measured from Screen Studio's own demo
     /// (a frame of lead-in, most of the move in the next ~0.1 s, then a soft settle).
@@ -208,97 +220,34 @@ struct Motion: @unchecked Sendable {
         return CursorSample(t: t, x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, down: a.down)
     }
 
-    /// Where to zoom, from what happened while recording.
-    ///
-    /// Cues: clicks (inside the recording, not the menu bar, not the final Stop click), plus
-    /// moments where the cursor comes to rest on something for a while without clicking.
-    /// A cue joins the current zoom only if it's soon after the last one *and* close enough to
-    /// still be on screen at that zoom; a cue elsewhere starts a new zoom instead of dragging the
-    /// camera across the whole screen. Each zoom lands as its first click happens, holds a beat
-    /// after the last, and is capped so nothing stays zoomed for ages.
+    /// Where to zoom, the way Screen Studio does it: every click asks for a zoom from 0.3 s before
+    /// it to 2.5 s after (clicks in the last second are ignored), and requests that overlap or are
+    /// less than 2.5 s apart become one zoom. Where the camera looks inside a zoom is decided per
+    /// frame from the click groups, so clicks far apart still share one zoom and the camera pans.
     static func autoSegments(samples: [CursorSample], duration: Double) -> [ZoomSegment] {
-        struct Cue { var t: Double; var x: Double; var y: Double; var weight: Double }
-        var cues: [Cue] = []
-
-        // Clicks.
+        var ranges: [(Double, Double)] = []
         var wasDown = false
         for s in samples {
-            if s.down && !wasDown, s.t > 0.3, s.t < duration - 1.0,
-               s.x >= 0, s.x <= 1, s.y >= 0.035, s.y <= 1 {
-                cues.append(Cue(t: s.t, x: s.x, y: s.y, weight: 1))
+            if s.down && !wasDown, s.t < duration - 1.0 {
+                ranges.append((max(s.t - 0.3, 0.001), min(s.t + 2.5, duration - 0.8)))
             }
             wasDown = s.down
         }
-
-        // Rests: the cursor travels somewhere, then stays within a small radius for 0.6–3 s.
-        var runStart = 0
-        func closeRun(_ a: Int, _ b: Int) {
-            guard b - a >= 2 else { return }
-            let d = samples[b - 1].t - samples[a].t
-            guard d >= 0.6, d <= 3 else { return }
-            let mid = (samples[a].t + samples[b - 1].t) / 2
-            guard mid > 0.5, mid < duration - 1.5 else { return }
-            let xs = samples[a..<b].map(\.x), ys = samples[a..<b].map(\.y)
-            let x = xs.reduce(0, +) / Double(xs.count), y = ys.reduce(0, +) / Double(ys.count)
-            guard x >= 0, x <= 1, y >= 0.035, y <= 1 else { return }
-            // Only count rests that follow real travel (not idling where it already was).
-            let before = samples[max(0, a - 30)..<a]
-            let travelled = before.contains { hypot($0.x - x, $0.y - y) > 0.12 }
-            if travelled { cues.append(Cue(t: samples[a].t + 0.15, x: x, y: y, weight: 0.5)) }
-        }
-        for i in 1..<max(samples.count, 1) {
-            if hypot(samples[i].x - samples[runStart].x, samples[i].y - samples[runStart].y) > 0.02 {
-                closeRun(runStart, i)
-                runStart = i
+        var merged: [(Double, Double)] = []
+        for r in ranges.sorted(by: { $0.0 < $1.0 }) where r.1 > r.0 {
+            if let last = merged.last, last.1 + 2.5 >= r.0 {
+                merged[merged.count - 1].1 = max(last.1, r.1)
+            } else {
+                merged.append(r)
             }
         }
-        if !samples.isEmpty { closeRun(runStart, samples.count) }
-        cues.sort { $0.t < $1.t }
-        // A rest right before or after a click is the same moment; keep the click.
-        cues = cues.filter { c in c.weight == 1 || !cues.contains { $0.weight == 1 && abs($0.t - c.t) < 1.5 } }
-
-        // Group cues that are close in time and in place.
-        let scale = 2.0
-        let reach = 0.5 / scale * 0.8          // how far apart two points can be and both stay in view
-        var groups: [[Cue]] = []
-        for c in cues {
-            if var g = groups.last, let last = g.last, c.t - last.t < 3.0 {
-                let cx = g.map(\.x).reduce(0, +) / Double(g.count), cy = g.map(\.y).reduce(0, +) / Double(g.count)
-                if abs(c.x - cx) < reach && abs(c.y - cy) < reach {
-                    g.append(c)
-                    groups[groups.count - 1] = g
-                    continue
-                }
-            }
-            groups.append([c])
+        // Screen Studio starts zooming out when its range ends; Closeup's zoom is fully out at the
+        // segment's end, so the segment runs one zoom-out longer.
+        return merged.map { r in
+            var seg = ZoomSegment(start: r.0, end: r.1, scale: 2)
+            seg.end = min(duration, r.1 + rampTime(seg))
+            return seg
         }
-        // A lone rest is a weak cue; only rests that come with clicks, or long ones, make zooms.
-        groups = groups.filter { $0.contains { $0.weight == 1 } || $0.count >= 2 }
-
-        var segs: [ZoomSegment] = []
-        var centers: [(Double, Double)] = []
-        for g in groups {
-            let first = g.first!.t, last = g.last!.t
-            let cx = g.map(\.x).reduce(0, +) / Double(g.count), cy = g.map(\.y).reduce(0, +) / Double(g.count)
-            // Land as the first click happens (the zoom takes ~0.45 s), hold 1.8 s after the last,
-            // and stay at least 2.4 s so it reads as a deliberate zoom, not a twitch.
-            let start = max(0, first - 0.5)
-            var end = min(duration - 0.3, max(last + 1.8, start + 2.4))
-            end = min(end, start + 9)
-            guard end - start > 1.0 else { continue }
-            if let prev = segs.last, let pc = centers.last, start < prev.end + 1.2 {
-                if hypot(cx - pc.0, cy - pc.1) < 0.45 {
-                    // Nearby and soon: one longer zoom; the camera follows across.
-                    segs[segs.count - 1].end = min(max(prev.end, end), prev.start + 12)
-                    centers[centers.count - 1] = ((pc.0 + cx) / 2, (pc.1 + cy) / 2)
-                } // Far away and soon: there's no time to zoom out and back in, and chasing it
-                  // means a whip pan across the screen. Stay with the earlier zoom and skip this one.
-                continue
-            }
-            segs.append(ZoomSegment(start: start, end: end, scale: scale))
-            centers.append((cx, cy))
-        }
-        return segs
     }
 
     /// Stretches of steady typing (3+ keys a second for 2+ seconds), to speed up.
@@ -322,6 +271,32 @@ struct Motion: @unchecked Sendable {
         }
         if let s = start, last - s >= 2, Double(count) / max(last - s, 0.1) >= 3 { spans.append(Span(start: s, end: last, rate: 3)) }
         return spans
+    }
+}
+
+/// Screen Studio's spring: stiffness 125, damping 12, mass 1.5, "clamp" on, stepped every
+/// millisecond (semi-implicit Euler). Clamp means that once the spring is heading for the target
+/// faster than it can stop, damping goes up to critical, so it lands without overshooting.
+struct PhysicalSpring {
+    var value: Double
+    var velocity = 0.0
+    var stiffness = 125.0, damping = 12.0, mass = 1.5
+    init(_ v: Double) { value = v }
+
+    mutating func step(to target: Double, dt: Double) -> Double {
+        var c = damping
+        let dist = target - value
+        if velocity * dist > 0, abs(velocity) > abs(dist) * (stiffness / mass).squareRoot() {
+            c = max(c, 2 * (stiffness * mass).squareRoot())
+        }
+        let steps = max(1, Int((dt * 1000).rounded()))
+        let h = dt / Double(steps)
+        for _ in 0..<steps {
+            velocity += (-(value - target) * stiffness - velocity * c) / mass * h
+            value += velocity * h
+        }
+        if abs(velocity) < 1e-5 && abs(value - target) < 1e-5 { value = target; velocity = 0 }
+        return value
     }
 }
 
