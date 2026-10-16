@@ -50,6 +50,10 @@ struct Motion: @unchecked Sendable {
         // Camera aim, held between zooms so zooming out doesn't swing back to the centre.
         var aimX = 0.5, aimY = 0.5
         var aimedAt: UUID?
+        // Zooms cut short because the cursor left the view (id → new end), and how long it's been out.
+        var cutShort: [UUID: Double] = [:]
+        var outFor = 0.0
+        var live = segments.filter { $0.kind == .classic }
         let classics = segments.filter { $0.kind == .classic }
         var loopHint = 0
         let home = Self.cursor(at: loopStart, in: samples, hint: &loopHint)
@@ -82,8 +86,10 @@ struct Motion: @unchecked Sendable {
             // when the segment does. Inside it, the camera aims where the action will be (the
             // cursor a moment ahead), then only moves when the cursor nears the edge of the view.
             let seg = segments.first { t >= $0.start && t < $0.end }
-            let classic = seg?.kind == .classic ? seg : nil
-            let level = Self.zoomLevel(at: t, classics)
+            var classic = seg?.kind == .classic ? seg : nil
+            if let c = classic, let e = cutShort[c.id], t >= e { classic = nil }
+            let level = Self.zoomLevel(at: t, live)
+            _ = classics
             zoom.append(Float(level))
             if let c = classic {
                 if let f = c.focus {
@@ -95,8 +101,22 @@ struct Motion: @unchecked Sendable {
                         let ahead = Self.cursor(at: min(c.end, c.start + Self.rampTime(c) + 0.15), in: samples, hint: &h)
                         aimX = ahead.x; aimY = ahead.y
                     }
+                    // Cursor fled the view for a while (a fling across the screen): ease out now rather
+                    // than chase it, like Screen Studio does.
+                    if !Self.landing(c, t), cutShort[c.id] == nil {
+                        let half = 0.5 / max(level, 1)
+                        let vx = min(max(fxs.value, half), 1 - half), vy = min(max(fys.value, half), 1 - half)
+                        let out = abs(sx - vx) > half * 1.05 || abs(sy - vy) > half * 1.05
+                        outFor = out ? outFor + dt : 0
+                        if outFor > 0.3, let i = live.firstIndex(where: { $0.id == c.id }) {
+                            let end = min(c.end, t + Self.rampTime(c))
+                            cutShort[c.id] = end
+                            live[i].end = end
+                        }
+                    }
                     // Dead zone: the cursor can roam the middle of the view without moving the camera.
-                    let reach = 0.5 / c.scale * 0.55
+                    // Not while the zoom is still landing: re-aiming mid-landing reads as a lurch.
+                    let reach = Self.landing(c, t) || cutShort[c.id] != nil ? 1.0 : 0.5 / c.scale * 0.55
                     let dx = sx - aimX, dy = sy - aimY
                     if abs(dx) > reach { aimX += dx - (dx > 0 ? reach : -reach) }
                     if abs(dy) > reach { aimY += dy - (dy > 0 ? reach : -reach) }
@@ -104,9 +124,12 @@ struct Motion: @unchecked Sendable {
             }
             // Fully zoomed out, the aim is invisible: jump it so the next zoom heads straight in.
             if level < 1.01 { fxs = Spring(aimX); fys = Spring(aimY) }
-            let follow = classic?.instant == true ? 0.001 : 0.16
-            fx.append(Float(fxs.step(to: aimX, time: follow, dt: dt)))
-            fy.append(Float(fys.step(to: aimY, time: follow, dt: dt)))
+            // Glide, never lurch: a soft follow, and on-screen pan speed capped at 1.2 screen-widths/s.
+            let instant = classic?.instant == true
+            let follow = instant ? 0.001 : 0.3
+            let cap = instant ? .infinity : 1.5 / max(level, 1)
+            fx.append(Float(fxs.step(to: aimX, time: follow, dt: dt, maxSpeed: cap)))
+            fy.append(Float(fys.step(to: aimY, time: follow, dt: dt, maxSpeed: cap)))
             _ = z
             let fast = seg?.instant == true
             let isLoupe = seg?.kind == .loupe
@@ -114,6 +137,8 @@ struct Motion: @unchecked Sendable {
             loupeScale.append(Float(ls.step(to: isLoupe ? (seg?.scale ?? 2) : Double(loupeScale.last ?? 2), time: 0.2, dt: dt)))
         }
     }
+
+    private static func landing(_ c: ZoomSegment, _ t: Double) -> Bool { t < c.start + rampTime(c) }
 
     /// How long a zoom takes to land: about half a second, measured from Screen Studio's own demo
     /// (a frame of lead-in, most of the move in the next ~0.1 s, then a soft settle).
@@ -306,11 +331,15 @@ struct Spring {
     var velocity = 0.0
     init(_ v: Double) { value = v }
 
-    mutating func step(to target: Double, time: Double, dt: Double) -> Double {
+    mutating func step(to target: Double, time: Double, dt: Double, maxSpeed: Double = .infinity) -> Double {
         let omega = 2 / max(time, 0.0001)
         let x = omega * dt
         let e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x)
-        let change = value - target
+        // Limit how far ahead the target can pull (Unity's SmoothDamp maxSpeed), so long moves
+        // become a steady glide rather than a fast snap.
+        let maxChange = maxSpeed * time
+        let change = min(max(value - target, -maxChange), maxChange)
+        let target = value - change
         let temp = (velocity + omega * change) * dt
         velocity = (velocity - omega * temp) * e
         value = target + (change + temp) * e
