@@ -50,7 +50,7 @@ struct Motion: @unchecked Sendable {
         var aimX = 0.5, aimY = 0.5
         let groups = Dictionary(uniqueKeysWithValues: segments.filter { $0.kind == .classic && $0.focus == nil }
             .map { ($0.id, Self.activityGroups(samples: samples, in: $0)) })
-        var panX = PhysicalSpring(0.5), panY = PhysicalSpring(0.5)
+        var panX = Spring(0.5), panY = Spring(0.5)
         let live = segments.filter { $0.kind == .classic }
         var loopHint = 0
         let home = Self.cursor(at: loopStart, in: samples, hint: &loopHint)
@@ -80,9 +80,9 @@ struct Motion: @unchecked Sendable {
             alpha.append(Float(a.step(to: idleHidden || spanHidden ? 0 : 1, time: 0.1, dt: dt)))
 
             // Camera, as Screen Studio does it ("follow click groups"). The cursor activity inside a
-            // zoom is split into groups that each fit in half the zoomed view; the camera aims at
+            // zoom is split into groups that each fit in the zoomed view; the camera aims at
             // the centre of the group happening now, so it holds still while you work in one place
-            // and pans once when you move on. The pan is Screen Studio's own spring.
+            // and pans once when you move on.
             let seg = segments.first { t >= $0.start && t < $0.end }
             let classic = seg?.kind == .classic ? seg : nil
             let level = Self.zoomLevel(at: t, live)
@@ -95,9 +95,12 @@ struct Motion: @unchecked Sendable {
                 }
             }
             // Fully zoomed out, the aim is invisible: jump it so the next zoom heads straight in.
-            if level < 1.01 || classic?.instant == true { panX = PhysicalSpring(aimX); panY = PhysicalSpring(aimY) }
-            fx.append(Float(panX.step(to: aimX, dt: dt)))
-            fy.append(Float(panY.step(to: aimY, dt: dt)))
+            if level < 1.01 || classic?.instant == true { panX = Spring(aimX); panY = Spring(aimY) }
+            // Screen Studio's own spring pans in ~0.3 s (up to ~8 screen-widths/s), which reads as
+            // a whip. Glide instead: a soft follow, on-screen speed capped at 1.5 screen-widths/s.
+            let cap = 1.5 / max(level, 1)
+            fx.append(Float(panX.step(to: aimX, time: 0.3, dt: dt, maxSpeed: cap)))
+            fy.append(Float(panY.step(to: aimY, time: 0.3, dt: dt, maxSpeed: cap)))
             let fast = seg?.instant == true
             let isLoupe = seg?.kind == .loupe
             loupe.append(Float(lo.step(to: isLoupe ? 1 : 0, time: fast ? 0.001 : 0.18, dt: dt)))
@@ -109,7 +112,8 @@ struct Motion: @unchecked Sendable {
 
     /// Screen Studio's click groups for one zoom: cursor positions (thinned to moves of ~10 px,
     /// clicks always kept) taken in order, a new group starting whenever the next one would make
-    /// the group wider or taller than half of what's visible at that zoom. Each group's centre is
+    /// the group wider or taller than 80% of what's visible at that zoom (Screen Studio
+    /// uses half, which pans more often than it needs to). Each group's centre is
     /// weighted by how long the cursor spent at each point.
     static func activityGroups(samples: [CursorSample], in seg: ZoomSegment) -> [ActivityGroup] {
         var h = 0
@@ -120,7 +124,7 @@ struct Motion: @unchecked Sendable {
             if s.down != wasDown || hypot(s.x - last.x, s.y - last.y) >= 0.003 { events.append(s) }
             wasDown = s.down
         }
-        let maxSpan = 0.5 / max(seg.scale, 1)
+        let maxSpan = 0.8 / max(seg.scale, 1)
         var groups: [[CursorSample]] = []
         var minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0
         for e in events {
@@ -272,32 +276,6 @@ struct Motion: @unchecked Sendable {
         }
         if let s = start, last - s >= 2, Double(count) / max(last - s, 0.1) >= 3 { spans.append(Span(start: s, end: last, rate: 3)) }
         return spans
-    }
-}
-
-/// Screen Studio's spring: stiffness 125, damping 12, mass 1.5, "clamp" on, stepped every
-/// millisecond (semi-implicit Euler). Clamp means that once the spring is heading for the target
-/// faster than it can stop, damping goes up to critical, so it lands without overshooting.
-struct PhysicalSpring {
-    var value: Double
-    var velocity = 0.0
-    var stiffness = 125.0, damping = 12.0, mass = 1.5
-    init(_ v: Double) { value = v }
-
-    mutating func step(to target: Double, dt: Double) -> Double {
-        var c = damping
-        let dist = target - value
-        if velocity * dist > 0, abs(velocity) > abs(dist) * (stiffness / mass).squareRoot() {
-            c = max(c, 2 * (stiffness * mass).squareRoot())
-        }
-        let steps = max(1, Int((dt * 1000).rounded()))
-        let h = dt / Double(steps)
-        for _ in 0..<steps {
-            velocity += (-(value - target) * stiffness - velocity * c) / mass * h
-            value += velocity * h
-        }
-        if abs(velocity) < 1e-5 && abs(value - target) < 1e-5 { value = target; velocity = 0 }
-        return value
     }
 }
 
