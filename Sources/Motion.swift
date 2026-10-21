@@ -220,15 +220,16 @@ struct Motion: @unchecked Sendable {
         return CursorSample(t: t, x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, down: a.down)
     }
 
-    /// Where to zoom, the way Screen Studio does it: every click asks for a zoom from 0.3 s before
-    /// it to 2.5 s after (clicks in the last second are ignored), and requests that overlap or are
+    /// Where to zoom, the way Screen Studio does it: every press and release asks for a zoom from 0.3 s
+    /// before it to 2.5 s after (clicks in the last second are ignored), and requests that overlap or are
     /// less than 2.5 s apart become one zoom. Where the camera looks inside a zoom is decided per
     /// frame from the click groups, so clicks far apart still share one zoom and the camera pans.
     static func autoSegments(samples: [CursorSample], duration: Double) -> [ZoomSegment] {
         var ranges: [(Double, Double)] = []
         var wasDown = false
+        // Screen Studio's click list holds both the press and the release.
         for s in samples {
-            if s.down && !wasDown, s.t < duration - 1.0 {
+            if s.down != wasDown, s.t < duration - 1.0 {
                 ranges.append((max(s.t - 0.3, 0.001), min(s.t + 2.5, duration - 0.8)))
             }
             wasDown = s.down
