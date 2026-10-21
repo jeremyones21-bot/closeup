@@ -3,6 +3,7 @@ import SwiftUI
 /// Ruler (trim brackets, flags, scrubbing) over one track per kind of edit:
 /// Zoom, Cut & Speed, Cursor, Mask, and Layout when there's a camera.
 /// Drag a block to move it, drag an edge to resize, double-click empty track to add.
+/// Right-click a block or a track for its menu; Delete removes the selected block.
 struct TimelineView: View {
     @Bindable var model: EditorModel
 
@@ -10,6 +11,9 @@ struct TimelineView: View {
     private let laneHeight: CGFloat = 26
     private enum Grab { case move, start, end }
     @State private var grab: (id: UUID, kind: Grab, start: Double, end: Double)?
+    /// Where the pointer last was over a track, for "Add … Here" in the right-click menu.
+    @State private var hoverTime: Double = 0
+    @FocusState private var focused: Bool
 
     var lanes: [Lane] { Lane.allCases.filter { $0 != .layout || model.hasCamera } }
 
@@ -51,6 +55,20 @@ struct TimelineView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .coordinateSpace(name: "tl")
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in
+            guard model.selection != nil else { return .ignored }
+            model.deleteSelected()
+            return .handled
+        }
+        .onKeyPress(.space) { model.togglePlay(); return .handled }
+    }
+
+    private func select(_ lane: Lane, _ id: UUID) {
+        model.selection = Selection(lane: lane, id: id)
+        focused = true
     }
 
     // MARK: Ruler
@@ -83,15 +101,17 @@ struct TimelineView: View {
 
             trimHandle(at: x(model.edits.trimStart), leading: true)
                 .gesture(DragGesture(coordinateSpace: .named("tl")).onChanged { v in
+                    model.trimming = true
                     model.edits.trimStart = min(time(v.location.x), model.trimEnd - 0.5)
                     model.seek(to: model.edits.trimStart)
-                })
+                }.onEnded { _ in model.trimming = false })
             trimHandle(at: x(model.trimEnd), leading: false)
                 .gesture(DragGesture(coordinateSpace: .named("tl")).onChanged { v in
+                    model.trimming = true
                     let t = max(time(v.location.x), model.edits.trimStart + 0.5)
                     model.edits.trimEnd = t >= model.duration - 0.01 ? nil : t
                     model.seek(to: t)
-                })
+                }.onEnded { _ in model.trimming = false })
         }
     }
 
@@ -120,11 +140,16 @@ struct TimelineView: View {
                 .frame(width: width, height: laneHeight)
                 .offset(x: inset)
                 .contentShape(Rectangle())
-                .onTapGesture(count: 2, coordinateSpace: .named("tl")) { p in model.add(lane, at: time(p.x)) }
+                .onTapGesture(count: 2, coordinateSpace: .named("tl")) { p in model.add(lane, at: time(p.x)); focused = true }
                 .onTapGesture(count: 1, coordinateSpace: .named("tl")) { p in
                     model.selection = nil
                     model.seek(to: time(p.x))
+                    focused = true
                 }
+                .onContinuousHover(coordinateSpace: .named("tl")) { phase in
+                    if case .active(let p) = phase { hoverTime = time(p.x) }
+                }
+                .contextMenu { laneMenu(lane) }
 
             if lane == .zoom {
                 ForEach(Array(model.clicks.enumerated()), id: \.offset) { _, c in
@@ -173,9 +198,10 @@ struct TimelineView: View {
         .frame(width: max(6, right - left), height: laneHeight - 4)
         .offset(x: left, y: 2)
         .contentShape(Rectangle())
-        .onTapGesture { model.selection = Selection(lane: lane, id: id); model.seek(to: start) }
+        .onTapGesture { select(lane, id); model.seek(to: start) }
+        .contextMenu { blockMenu(lane, id, start) }
         .gesture(DragGesture(minimumDistance: 2).onChanged { v in
-            if grab?.id != id { grab = (id, .move, start, end); model.selection = Selection(lane: lane, id: id) }
+            if grab?.id != id { grab = (id, .move, start, end); select(lane, id) }
             guard let g = grab else { return }
             let len = g.end - g.start
             let s = max(0, min(d - len, g.start + Double(v.translation.width) * perPoint))
@@ -187,12 +213,74 @@ struct TimelineView: View {
         Rectangle().fill(Color.clear).frame(width: 7).contentShape(Rectangle())
             .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
             .gesture(DragGesture(minimumDistance: 1).onChanged { v in
-                if grab?.id != id { grab = (id, kind, start, end); model.selection = Selection(lane: lane, id: id) }
+                if grab?.id != id { grab = (id, kind, start, end); select(lane, id) }
                 guard let g = grab else { return }
                 let dt = Double(v.translation.width) * perPoint
                 if kind == .start { model.setSpan(lane, id, start: g.start + dt, end: g.end) }
                 else { model.setSpan(lane, id, start: g.start, end: g.end + dt) }
             }.onEnded { _ in grab = nil })
+    }
+
+    // MARK: Right-click menus
+
+    @ViewBuilder private func laneMenu(_ lane: Lane) -> some View {
+        let t = hoverTime
+        switch lane {
+        case .zoom:
+            Button("Add Zoom Here") { model.add(.zoom, at: t) }
+            Button("Add Loupe Here") { model.add(.zoom, at: t, kind: "loupe") }
+            Divider()
+            Button("Recreate Automatic Zooms") { model.regenerateZooms() }
+            Button("Remove All Zooms", role: .destructive) { model.removeAll(.zoom) }
+                .disabled(model.edits.segments.isEmpty)
+        case .clip:
+            Button("Add Cut Here") { model.add(.clip, at: t) }
+            Button("Add Speed-Up Here") { model.add(.clip, at: t, kind: "speed") }
+            Divider()
+            Button("Remove All Cuts and Speed Changes", role: .destructive) { model.removeAll(.clip) }
+                .disabled(model.items(.clip).isEmpty)
+        case .cursor:
+            Button("Hide Cursor Here") { model.add(.cursor, at: t) }
+            Button("Remove All", role: .destructive) { model.removeAll(.cursor) }
+                .disabled(model.items(.cursor).isEmpty)
+        case .mask:
+            ForEach(MaskKind.allCases) { k in
+                Button("Add \(k.label) Here") { model.add(.mask, at: t, kind: k.rawValue) }
+            }
+            Button("Remove All Masks", role: .destructive) { model.removeAll(.mask) }
+                .disabled(model.items(.mask).isEmpty)
+        case .layout:
+            ForEach(CameraLayout.allCases) { l in
+                Button("Add \(l.label) Here") { model.add(.layout, at: t, kind: l.rawValue) }
+            }
+            Button("Remove All Layouts", role: .destructive) { model.removeAll(.layout) }
+                .disabled(model.items(.layout).isEmpty)
+        }
+    }
+
+    @ViewBuilder private func blockMenu(_ lane: Lane, _ id: UUID, _ start: Double) -> some View {
+        if lane == .zoom, let z = model.edits.segments.first(where: { $0.id == id }) {
+            Menu("Zoom Amount") {
+                ForEach([1.25, 1.5, 2.0, 2.5, 3.0, 4.0], id: \.self) { v in
+                    Toggle(String(format: "%g×", v), isOn: Binding(get: { abs(z.scale - v) < 0.01 },
+                                                                 set: { _ in model.updateZoom(id) { $0.scale = v } }))
+                }
+            }
+            Picker("Type", selection: Binding(get: { z.kind }, set: { k in model.updateZoom(id) { $0.kind = k } })) {
+                ForEach(ZoomSegment.Kind.allCases) { Text($0.label).tag($0) }
+            }
+            Toggle("Instant (No Animation)", isOn: Binding(get: { z.instant }, set: { v in model.updateZoom(id) { $0.instant = v } }))
+            Toggle("Follow Cursor", isOn: Binding(get: { z.focus == nil },
+                                                  set: { v in model.updateZoom(id) { $0.focus = v ? nil : CGPoint(x: 0.5, y: 0.5) } }))
+            Divider()
+        }
+        Button("Go to Start") { model.seek(to: start) }
+        Button("Duplicate") { model.duplicate(lane, id) }
+        Divider()
+        Button("Delete", role: .destructive) {
+            model.selection = Selection(lane: lane, id: id)
+            model.deleteSelected()
+        }
     }
 
     // MARK: Helpers

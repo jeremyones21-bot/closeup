@@ -181,7 +181,7 @@ final class EditorModel {
         item.audioMix = source.audioMix(volume: edits.volume)
         item.audioTimePitchAlgorithm = .spectral
         player.replaceCurrentItem(with: item)
-        if loaded { seek(to: keep) }
+        if loaded { seek(to: min(max(keep, edits.trimStart), trimEnd)) }
     }
 
     private func tick(_ outputTime: Double) {
@@ -206,16 +206,26 @@ final class EditorModel {
     func seek(to t: Double) {
         let c = max(0, min(duration, t))
         currentTime = c
-        let out = timeline.output(at: c)
+        // Seeking to the very end of the item (a trimmed-off moment maps there) shows black.
+        let end = timeline.duration
+        let out = min(timeline.output(at: c), max(0, end - 1.0 / 60))
         player.seek(to: CMTime(seconds: out, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     // MARK: Edits
 
+    /// Set while a trim handle is being dragged. Swapping the player item on every drag tick
+    /// blanks the preview, so the new timeline is built once, when the drag ends.
+    var trimming = false {
+        didSet { if oldValue && !trimming { apply(motion: false, timing: true, canvas: false) } }
+    }
+
     private func apply(motion motionChanged: Bool, timing: Bool, canvas: Bool) {
         if motionChanged { motion = makeMotion(edits) }
         compositor.update(style: edits.style, motion: motion, scene: sceneData())
-        if timing || canvas {
+        if timing && trimming && !canvas {
+            redrawPaused()
+        } else if timing || canvas {
             rebuilding?.cancel()
             rebuilding = Task {
                 try? await Task.sleep(for: .milliseconds(timing ? 120 : 0))   // coalesce drags
@@ -374,6 +384,58 @@ final class EditorModel {
         }
     }
 
+    func duplicate(_ lane: Lane, _ id: UUID) {
+        guard let item = items(lane).first(where: { $0.id == id }) else { return }
+        let len = item.end - item.start
+        let free = items(lane).filter { $0.start >= item.end }.map(\.start).min() ?? duration
+        guard free - item.end >= min(len, 0.3) else { return }
+        let start = item.end, end = min(free, item.end + len)
+        switch lane {
+        case .zoom:
+            guard var z = edits.segments.first(where: { $0.id == id }) else { return }
+            z.id = UUID(); z.start = start; z.end = end
+            edits.segments.append(z); edits.segments.sort { $0.start < $1.start }
+            selection = Selection(lane: lane, id: z.id)
+        default:
+            guard var sp = selectedSpanAny(lane, id) else { return }
+            sp.id = UUID(); sp.start = start; sp.end = end
+            switch lane {
+            case .clip: if edits.speeds.contains(where: { $0.id == id }) { edits.speeds.append(sp) } else { edits.cuts.append(sp) }
+            case .cursor: edits.cursorHidden.append(sp)
+            case .mask: edits.masks.append(sp)
+            case .layout: edits.layouts.append(sp)
+            case .zoom: break
+            }
+            selection = Selection(lane: lane, id: sp.id)
+        }
+    }
+
+    private func selectedSpanAny(_ lane: Lane, _ id: UUID) -> Span? {
+        switch lane {
+        case .clip: (edits.cuts + edits.speeds).first { $0.id == id }
+        case .cursor: edits.cursorHidden.first { $0.id == id }
+        case .mask: edits.masks.first { $0.id == id }
+        case .layout: edits.layouts.first { $0.id == id }
+        case .zoom: nil
+        }
+    }
+
+    func updateZoom(_ id: UUID, _ change: (inout ZoomSegment) -> Void) {
+        guard let i = edits.segments.firstIndex(where: { $0.id == id }) else { return }
+        change(&edits.segments[i])
+    }
+
+    func removeAll(_ lane: Lane) {
+        switch lane {
+        case .zoom: edits.segments = []
+        case .clip: edits.cuts = []; edits.speeds = []
+        case .cursor: edits.cursorHidden = []
+        case .mask: edits.masks = []
+        case .layout: edits.layouts = []
+        }
+        selection = nil
+    }
+
     func regenerateZooms() {
         edits.segments = Motion.autoSegments(samples: samples, duration: duration)
         selection = nil
@@ -432,7 +494,7 @@ final class EditorModel {
         gen.videoComposition = composition
         gen.requestedTimeToleranceBefore = .zero
         gen.requestedTimeToleranceAfter = .zero
-        let t = CMTime(seconds: timeline.output(at: currentTime), preferredTimescale: 600)
+        let t = CMTime(seconds: min(timeline.output(at: currentTime), max(0, timeline.duration - 1.0 / 60)), preferredTimescale: 600)
         guard let (cg, _) = try? await gen.image(at: t) else { return nil }
         return NSImage(cgImage: cg, size: .zero)
     }
