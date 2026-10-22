@@ -106,6 +106,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
     private var capturedSize = CGSize.zero   // points
     private var scale: Double = 2
     private var camera: CameraRecorder?
+    var cameraSession: AVCaptureSession? { camera?.captureSession }
     private var device: DeviceRecorder?
     private var deviceName: String?
 
@@ -151,7 +152,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
             d.start()
             return
         }
-        let content = try await Self.content()
+        // Every app, not just ones with a window on screen: the record bar is already closed when
+        // capture starts, so Closeup itself would be missing from an on-screen-only list and its
+        // recording controls (opened a moment later) would end up in the video.
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         let me = content.applications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
         let cfg = SCStreamConfiguration()
         let filter: SCContentFilter
@@ -294,7 +298,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         if hideDesktopIcons, let finder = content.applications.first(where: { $0.bundleIdentifier == "com.apple.finder" }) {
             // Leave Finder out too, except its ordinary windows: that drops only the desktop icons.
             apps.append(finder)
-            keep = content.windows.filter { $0.owningApplication?.bundleIdentifier == "com.apple.finder" && $0.windowLayer >= 0 }
+            keep = content.windows.filter { $0.owningApplication?.bundleIdentifier == "com.apple.finder" && $0.windowLayer >= 0 && $0.isOnScreen }
         }
         return SCContentFilter(display: display, excludingApplications: apps, exceptingWindows: keep)
     }

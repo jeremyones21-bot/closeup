@@ -5,6 +5,8 @@ import AVFoundation
 final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let queue = DispatchQueue(label: "closeup.camera")
     private let session = AVCaptureSession()
+    /// For the live preview bubble shown while recording.
+    var captureSession: AVCaptureSession { session }
     private var writer: AVAssetWriter?
     private var input: AVAssetWriterInput?
     private let url: URL

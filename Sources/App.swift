@@ -414,6 +414,7 @@ final class AppState {
             flagCount = 0
             phase = .recording
             if Prefs.shared.showRecordingWidget { RecordingWidget.shared.show() }
+            if let cam = rec.cameraSession { CameraPreview.shared.show(session: cam) }
             if Prefs.shared.highlightRecordedArea, !rec.isDevice {
                 RegionDimmer.shared.show { [weak rec] in rec?.liveRegion }
             }
@@ -428,6 +429,7 @@ final class AppState {
 
     func stopRecording(openEditor shouldOpen: Bool = true, keepUI: Bool = false) async {
         RecordingWidget.shared.hide()
+        CameraPreview.shared.hide()
         RegionDimmer.shared.hide()
         switch phase {
         case .countdown:
@@ -479,6 +481,7 @@ final class AppState {
 
     private func fail(_ error: Error) {
         RecordingWidget.shared.hide()
+        CameraPreview.shared.hide()
         RegionDimmer.shared.hide()
         phase = .idle
         paused = false
