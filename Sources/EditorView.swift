@@ -23,24 +23,29 @@ struct EditorView: View {
             } else if !model.loaded {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                HStack(spacing: 0) {
-                    VStack(spacing: 0) {
-                        PlayerView(player: model.player)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color(nsColor: .underPageBackgroundColor))
-                            .overlay { PreviewOverlay(model: model, reel: reelPreview) }
-                        Divider()
-                        TransportBar(model: model)
-                        Divider()
-                        TimelineView(model: model)
-                            .frame(height: CGFloat(model.hasCamera ? 5 : 4) * 30 + 44)
+                VStack(spacing: 0) {
+                    HStack(alignment: .top, spacing: 16) {
+                        ToolRail(model: model)
+                        VStack(spacing: 10) {
+                            PreviewHeader(model: model)
+                            PlayerView(player: model.player)
+                                .overlay { PreviewOverlay(model: model, reel: reelPreview) }
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            TransportBar(model: model)
+                        }
+                        Inspector(model: model)
+                            .frame(width: 400)
                     }
-                    Divider()
-                    Inspector(model: model)
-                        .frame(width: 320)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    TimelineView(model: model)
+                        .frame(height: model.timelineHeight)
                 }
+                .background(Studio.background)
             }
         }
+        .preferredColorScheme(.dark)
         .navigationTitle(project.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -65,8 +70,11 @@ struct EditorView: View {
                 Button {
                     showExport = true
                 } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
+                    Label("Export", systemImage: "square.and.arrow.up").labelStyle(.titleAndIcon)
+                        .padding(.horizontal, 4)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Studio.zoom)
                 .disabled(!model.loaded)
                 .keyboardShortcut("e", modifiers: .command)
             }
@@ -139,6 +147,9 @@ struct PlayerView: NSViewRepresentable {
         v.controlsStyle = .none
         v.videoGravity = .resizeAspect
         v.allowsVideoFrameAnalysis = false
+        // No black bars around the frame: the editor's own background shows through.
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor.clear.cgColor
         return v
     }
 
@@ -151,26 +162,102 @@ struct TransportBar: View {
     let model: EditorModel
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button {
-                model.togglePlay()
-            } label: {
-                Image(systemName: model.playing ? "pause.fill" : "play.fill")
-                    .frame(width: 16)
-            }
-            .buttonStyle(.borderless)
-            .help("Play or pause (Space)")
-
-            Text("\(timecode(model.currentTime)) / \(timecode(model.trimEnd - model.edits.trimStart))")
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+        HStack(spacing: 22) {
             Spacer()
-            Text("Double-click the zoom track to add a zoom. Drag its edges to adjust.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            Text(timecode(model.timeline.output(at: model.currentTime)))
+                .monospacedDigit().foregroundStyle(.secondary).frame(width: 70, alignment: .trailing)
+            Button { model.seek(to: model.edits.trimStart) } label: { Image(systemName: "backward.end") }
+                .help("Go to start")
+            Button { model.togglePlay() } label: {
+                Image(systemName: model.playing ? "pause.circle" : "play.circle").font(.system(size: 24, weight: .light))
+            }
+            .help("Play or pause (Space)")
+            Button { model.seek(to: model.trimEnd) } label: { Image(systemName: "forward.end") }
+                .help("Go to end")
+            Text(timecode(model.editedDuration))
+                .monospacedDigit().foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
+            Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .font(.system(size: 16))
+        .buttonStyle(.plain)
+        .frame(height: 40)
+    }
+}
+
+/// Colours of the dark editor.
+enum Studio {
+    static let background = Color(red: 0.055, green: 0.055, blue: 0.065)
+    static let panel = Color(red: 0.10, green: 0.10, blue: 0.115)
+    static let stroke = Color.white.opacity(0.07)
+    static let clip = Color(red: 0.86, green: 0.55, blue: 0.08)
+    static let zoom = Color(red: 0.36, green: 0.31, blue: 0.95)
+}
+
+/// Tools down the left of the preview: add a zoom, loupe, cut, speed-up, hidden cursor, mask or
+/// layout at the playhead.
+struct ToolRail: View {
+    let model: EditorModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            tool("plus.magnifyingglass", "Add zoom at the playhead (Z)") { model.add(.zoom, at: model.currentTime) }
+            tool("magnifyingglass.circle", "Add loupe at the playhead") { model.add(.zoom, at: model.currentTime, kind: "loupe") }
+            Divider().frame(width: 28).padding(.vertical, 4)
+            tool("scissors", "Cut at the playhead (C)") { model.add(.clip, at: model.currentTime) }
+            tool("hare", "Speed up from the playhead") { model.add(.clip, at: model.currentTime, kind: "speed") }
+            Divider().frame(width: 28).padding(.vertical, 4)
+            tool("cursorarrow.slash", "Hide the cursor from the playhead") { model.add(.cursor, at: model.currentTime) }
+            tool("eye.slash", "Blur part of the screen from the playhead") { model.add(.mask, at: model.currentTime, kind: MaskKind.blur.rawValue) }
+            tool("highlighter", "Highlight part of the screen from the playhead") { model.add(.mask, at: model.currentTime, kind: MaskKind.highlight.rawValue) }
+            if model.hasCamera {
+                Divider().frame(width: 28).padding(.vertical, 4)
+                tool("rectangle.split.2x1", "Change the camera layout from the playhead") { model.add(.layout, at: model.currentTime, kind: CameraLayout.split.rawValue) }
+                tool("person.crop.rectangle", "Camera only from the playhead") { model.add(.layout, at: model.currentTime, kind: CameraLayout.fullscreen.rawValue) }
+            }
+        }
+        .padding(.vertical, 12)
+        .frame(width: 52)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Studio.panel))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Studio.stroke))
+        .padding(.top, 40)
+    }
+
+    private func tool(_ symbol: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 16)).frame(width: 40, height: 36).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary.opacity(0.85))
+        .help(help)
+    }
+}
+
+/// Above the preview: canvas shape and crop.
+struct PreviewHeader: View {
+    @Bindable var model: EditorModel
+    @State private var showCrop = false
+
+    var body: some View {
+        HStack(spacing: 22) {
+            Menu {
+                Picker("Aspect", selection: $model.edits.style.aspect) {
+                    ForEach(Aspect.allCases) { a in Text(a == .source ? "Auto" : a.label).tag(a) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Label(model.edits.style.aspect == .source ? "Auto" : model.edits.style.aspect.label, systemImage: "aspectratio")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Button { showCrop.toggle() } label: { Label("Crop", systemImage: "crop") }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showCrop, arrowEdge: .bottom) {
+                    Form { CropSection(model: model) }.formStyle(.grouped).frame(width: 320, height: 260)
+                }
+            Spacer()
+        }
+        .font(.system(size: 14))
+        .frame(height: 30)
     }
 }
 

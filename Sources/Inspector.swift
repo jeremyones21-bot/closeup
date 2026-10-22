@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 struct Inspector: View {
     @Bindable var model: EditorModel
-    @State private var tab = Tab.edit
+    @State private var tab = Tab.style
 
     enum Tab: String, CaseIterable, Identifiable {
         case edit, style, camera, audio, captions
@@ -22,29 +22,24 @@ struct Inspector: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Icon tabs with the name underneath: five text segments don't fit the inspector's width.
-            HStack(spacing: 2) {
+        HStack(alignment: .top, spacing: 12) {
+            // Icon rail, like Screen Studio's: one icon per settings page.
+            VStack(spacing: 10) {
                 ForEach(Tab.allCases.filter { $0 != .camera || model.hasCamera }) { t in
                     Button {
                         tab = t
                     } label: {
-                        VStack(spacing: 2) {
-                            Image(systemName: t.symbol).font(.system(size: 13))
-                            Text(t.label).font(.system(size: 10))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 38)
-                        .contentShape(Rectangle())
-                        .background(RoundedRectangle(cornerRadius: 6).fill(tab == t ? Color.accentColor.opacity(0.18) : .clear))
-                        .foregroundStyle(tab == t ? Color.accentColor : .secondary)
+                        Image(systemName: t.symbol).font(.system(size: 17))
+                            .frame(width: 36, height: 34)
+                            .contentShape(Rectangle())
+                            .foregroundStyle(tab == t ? Studio.zoom : .secondary)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(tab == t ? Studio.zoom.opacity(0.16) : .clear))
                     }
                     .buttonStyle(.plain)
                     .help(t.label)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            Divider()
+            .padding(.top, 40)
             Form {
                 switch tab {
                 case .edit: EditTab(model: model)
@@ -55,6 +50,10 @@ struct Inspector: View {
                 }
             }
             .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Studio.panel))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Studio.stroke))
+            .padding(.bottom, 8)
         }
         .onChange(of: model.selection) { if model.selection != nil { tab = .edit } }
     }
@@ -200,7 +199,7 @@ private struct EditTab: View {
     }
 }
 
-private struct CropSection: View {
+struct CropSection: View {
     @Bindable var model: EditorModel
 
     var body: some View {

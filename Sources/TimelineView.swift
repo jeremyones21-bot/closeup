@@ -7,15 +7,15 @@ import SwiftUI
 struct TimelineView: View {
     @Bindable var model: EditorModel
 
-    private let labelWidth: CGFloat = 78
-    private let laneHeight: CGFloat = 26
+    private let labelWidth: CGFloat = 8
+    private let laneHeight: CGFloat = 44
     private enum Grab { case move, start, end }
     @State private var grab: (id: UUID, kind: Grab, start: Double, end: Double)?
     /// Where the pointer last was over a track, for "Add … Here" in the right-click menu.
     @State private var hoverTime: Double = 0
     @FocusState private var focused: Bool
 
-    var lanes: [Lane] { Lane.allCases.filter { $0 != .layout || model.hasCamera } }
+    var lanes: [Lane] { model.visibleLanes }
 
     var body: some View {
         GeometryReader { geo in
@@ -25,22 +25,22 @@ struct TimelineView: View {
             let x = { (t: Double) -> CGFloat in inset + CGFloat(t / d) * width }
             let time = { (px: CGFloat) -> Double in max(0, min(d, Double((px - inset) / width) * d)) }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 ruler(width: width, inset: inset, x: x, time: time)
-                    .frame(height: 24)
+                    .frame(height: 30)
                 ForEach(lanes) { lane in
                     laneRow(lane, width: width, inset: inset, x: x, time: time)
                         .frame(height: laneHeight)
                 }
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
             // Trimmed-off parts.
             .overlay(alignment: .topLeading) {
                 ZStack(alignment: .topLeading) {
-                    Rectangle().fill(.black.opacity(0.22))
+                    Rectangle().fill(.black.opacity(0.45))
                         .frame(width: max(0, x(model.edits.trimStart) - inset))
                         .offset(x: inset)
-                    Rectangle().fill(.black.opacity(0.22))
+                    Rectangle().fill(.black.opacity(0.45))
                         .frame(width: max(0, x(d) - x(model.trimEnd)))
                         .offset(x: x(model.trimEnd))
                 }
@@ -48,12 +48,16 @@ struct TimelineView: View {
             }
             // Playhead.
             .overlay(alignment: .topLeading) {
-                Rectangle().fill(Color.accentColor).frame(width: 1.5)
-                    .offset(x: x(model.currentTime) - 0.75)
-                    .allowsHitTesting(false)
+                ZStack(alignment: .top) {
+                    Rectangle().fill(Studio.zoom).frame(width: 2)
+                    Circle().fill(Studio.zoom).frame(width: 14, height: 14).offset(y: 2)
+                }
+                .frame(width: 14)
+                .offset(x: x(model.currentTime) - 7)
+                .allowsHitTesting(false)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Studio.background)
         .coordinateSpace(name: "tl")
         .focusable()
         .focusEffectDisabled()
@@ -130,26 +134,47 @@ struct TimelineView: View {
     private func laneRow(_ lane: Lane, width: CGFloat, inset: CGFloat, x: @escaping (Double) -> CGFloat, time: @escaping (CGFloat) -> Double) -> some View {
         let d = max(model.duration, 0.01)
         return ZStack(alignment: .topLeading) {
-            Text(lane.title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-                .frame(width: labelWidth, height: laneHeight, alignment: .leading)
-                .padding(.leading, 10)
-
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color.secondary.opacity(0.07))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.18), lineWidth: 0.5))
+            RoundedRectangle(cornerRadius: 10)
+                .fill(trackColor(lane))
                 .frame(width: width, height: laneHeight)
                 .offset(x: inset)
                 .contentShape(Rectangle())
                 .onTapGesture(count: 2, coordinateSpace: .named("tl")) { p in model.add(lane, at: time(p.x)); focused = true }
                 .onTapGesture(count: 1, coordinateSpace: .named("tl")) { p in
-                    model.selection = nil
-                    model.seek(to: time(p.x))
+                    if lane == .zoom {
+                        model.add(.zoom, at: time(p.x))
+                    } else {
+                        model.selection = nil
+                        model.seek(to: time(p.x))
+                    }
                     focused = true
                 }
                 .onContinuousHover(coordinateSpace: .named("tl")) { phase in
                     if case .active(let p) = phase { hoverTime = time(p.x) }
                 }
                 .contextMenu { laneMenu(lane) }
+
+            if lane == .clip {
+                // The kept part of the recording, as one long clip.
+                let l = x(model.edits.trimStart), r = x(model.trimEnd)
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(LinearGradient(colors: [Studio.clip, Studio.clip.opacity(0.85)], startPoint: .top, endPoint: .bottom))
+                    .overlay {
+                        VStack(spacing: 1) {
+                            Text("Clip").font(.system(size: 11, weight: .medium)).opacity(0.6)
+                            Text("\(Int((model.editedDuration).rounded()))s  ·  1×").font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                        }
+                        .foregroundStyle(.white)
+                    }
+                    .frame(width: max(6, r - l), height: laneHeight)
+                    .offset(x: l)
+                    .allowsHitTesting(false)
+            } else if model.items(lane).isEmpty {
+                Text(hint(lane)).font(.system(size: 13)).foregroundStyle(.secondary)
+                    .frame(width: width, height: laneHeight)
+                    .offset(x: inset)
+                    .allowsHitTesting(false)
+            }
 
             if lane == .zoom {
                 ForEach(Array(model.clicks.enumerated()), id: \.offset) { _, c in
@@ -165,10 +190,28 @@ struct TimelineView: View {
         }
     }
 
+    private func trackColor(_ lane: Lane) -> Color {
+        switch lane {
+        case .zoom: Studio.zoom.opacity(0.14)
+        case .clip: Color.white.opacity(0.04)
+        default: Color.white.opacity(0.05)
+        }
+    }
+
+    private func hint(_ lane: Lane) -> String {
+        switch lane {
+        case .zoom: "Click or drag to add zoom on cursor"
+        case .clip: ""
+        case .cursor: "Double-click to hide the cursor"
+        case .mask: "Double-click to add a mask"
+        case .layout: "Double-click to change the camera layout"
+        }
+    }
+
     private func color(_ lane: Lane, _ id: UUID) -> Color {
         switch lane {
-        case .zoom: .accentColor
-        case .clip: model.isCut(id) ? .red : .orange
+        case .zoom: Studio.zoom
+        case .clip: model.isCut(id) ? Color(white: 0.16) : Color(red: 0.95, green: 0.72, blue: 0.25)
         case .cursor: .gray
         case .mask: model.edits.masks.first { $0.id == id }?.kind == .highlight ? .yellow : .purple
         case .layout: .teal
@@ -182,12 +225,15 @@ struct TimelineView: View {
         let perPoint = d / Double(width)
         let tint = color(lane, id)
         return ZStack {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(tint.opacity(selected ? 0.38 : 0.22))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(tint.opacity(selected ? 1 : 0.55), lineWidth: selected ? 1.5 : 1))
+            RoundedRectangle(cornerRadius: 10)
+                .fill(tint.opacity(lane == .clip ? 0.9 : (selected ? 1 : 0.85)))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(selected ? 0.9 : 0), lineWidth: 2))
             if right - left > 34 {
-                Text(model.label(lane, id)).font(.system(size: 10, weight: .medium)).monospacedDigit()
-                    .foregroundStyle(tint).lineLimit(1).padding(.horizontal, 4)
+                VStack(spacing: 1) {
+                    Text(lane.title).font(.system(size: 11, weight: .medium)).opacity(0.7)
+                    Text(model.label(lane, id)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                }
+                .foregroundStyle(.white).lineLimit(1).padding(.horizontal, 6)
             }
             HStack(spacing: 0) {
                 edge(lane, id, start, end, .start, perPoint: perPoint)
@@ -195,8 +241,8 @@ struct TimelineView: View {
                 edge(lane, id, start, end, .end, perPoint: perPoint)
             }
         }
-        .frame(width: max(6, right - left), height: laneHeight - 4)
-        .offset(x: left, y: 2)
+        .frame(width: max(6, right - left), height: laneHeight)
+        .offset(x: left)
         .contentShape(Rectangle())
         .onTapGesture { select(lane, id); model.seek(to: start) }
         .contextMenu { blockMenu(lane, id, start) }

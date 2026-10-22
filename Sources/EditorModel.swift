@@ -103,6 +103,12 @@ final class EditorModel {
         self.project = project
     }
 
+    /// Timeline tracks shown: clip and zoom always, the others once they have something in them.
+    var visibleLanes: [Lane] {
+        [.clip, .zoom] + [Lane.cursor, .mask, .layout].filter { !items($0).isEmpty }
+    }
+    var timelineHeight: CGFloat { 44 + CGFloat(visibleLanes.count) * 52 + 16 }
+
     var trimEnd: Double { min(edits.trimEnd ?? duration, duration) }
     var timeline: EditTimeline { source?.timeline ?? EditTimeline(edits: edits, sourceDuration: duration) }
 
