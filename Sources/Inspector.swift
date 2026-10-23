@@ -12,7 +12,7 @@ struct Inspector: View {
         var label: String { rawValue.capitalized }
         var symbol: String {
             switch self {
-            case .edit: "scissors"
+            case .edit: "slider.horizontal.3"
             case .style: "paintpalette"
             case .camera: "video"
             case .audio: "waveform"
