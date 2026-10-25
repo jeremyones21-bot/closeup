@@ -22,6 +22,16 @@ Needs macOS 15+ and the Xcode command-line tools.
 
 See `FEATURES.md` for the full feature checklist against Screen Studio.
 
+## AI control (MCP)
+
+`Closeup.app/Contents/MacOS/closeup-mcp` is a Model Context Protocol server, so an AI agent can record and edit videos. Add it to Claude Code with:
+
+```
+claude mcp add --scope user closeup /Applications/Closeup.app/Contents/MacOS/closeup-mcp
+```
+
+or to any MCP client as a stdio server with that command. Tools: `list_recordings`, `start_recording`, `stop_recording`, `get_recording`, `set_trim`, `add_zoom`, `update_zoom`, `remove_zoom`, `auto_zooms`, `add_cut`, `add_speed`, `remove_edit`, `set_style`, `render_frame` (returns an image), `export`, `open_in_editor`. Recording goes through the app (it holds the Screen Recording permission) via `closeup://` URLs; edits are written to the project's `edits.json`; frames and exports are rendered by the server with the app's compositor.
+
 ## URL scheme
 
 - `closeup://record?camera=1&mic=1`: start recording (3-second countdown); the flags are optional

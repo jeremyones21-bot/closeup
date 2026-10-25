@@ -46,6 +46,27 @@ for ARCH in arm64 x86_64; do
 done
 lipo -create "${THIN[@]}" -output "$MACOS_DIR/$APP_NAME"
 
+echo "==> MCP server (universal)"
+# Same sources as the app with its @main removed, plus mcp/Server.swift.
+MCP_SRC="$BUILD_DIR/mcp-src"
+mkdir -p "$MCP_SRC"
+cp Sources/*.swift mcp/*.swift "$MCP_SRC/"
+sed -i '' 's/^@main$//' "$MCP_SRC/App.swift"
+MTHIN=()
+for ARCH in arm64 x86_64; do
+  OUT="$BUILD_DIR/closeup-mcp-$ARCH"
+  if swiftc -O -swift-version 5 -parse-as-library -target "$ARCH-apple-macos$DEPLOY_TARGET" \
+      "$MCP_SRC"/*.swift -o "$OUT" 2>"$BUILD_DIR/mcp-$ARCH.log"; then
+    MTHIN+=("$OUT")
+    echo "    $ARCH ok"
+  else
+    echo "    $ARCH failed:"
+    grep -E "error" "$BUILD_DIR/mcp-$ARCH.log" | head -40
+    exit 1
+  fi
+done
+lipo -create "${MTHIN[@]}" -output "$MACOS_DIR/closeup-mcp"
+
 echo "==> Bundle"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -77,6 +98,7 @@ PLIST
 echo "APPL????" > "$APP/Contents/PkgInfo"
 
 echo "==> Signing with: $SIGN_ID"
+codesign --force --options runtime --sign "$SIGN_ID" "$MACOS_DIR/closeup-mcp"
 codesign --force --options runtime --entitlements Closeup.entitlements --sign "$SIGN_ID" "$APP"
 codesign --verify --deep --verbose=1 "$APP" 2>&1 | sed 's/^/    /'
 
