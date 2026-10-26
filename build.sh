@@ -65,7 +65,10 @@ for ARCH in arm64 x86_64; do
     exit 1
   fi
 done
-lipo -create "${MTHIN[@]}" -output "$MACOS_DIR/closeup-mcp"
+# In Contents/Helpers, not Contents/MacOS: a binary in MacOS is taken for the app itself, so
+# macOS gave it a Dock icon and sent closeup:// links to it instead of to Closeup.
+mkdir -p "$APP/Contents/Helpers"
+lipo -create "${MTHIN[@]}" -output "$APP/Contents/Helpers/closeup-mcp"
 
 echo "==> Bundle"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -98,7 +101,7 @@ PLIST
 echo "APPL????" > "$APP/Contents/PkgInfo"
 
 echo "==> Signing with: $SIGN_ID"
-codesign --force --options runtime --sign "$SIGN_ID" "$MACOS_DIR/closeup-mcp"
+codesign --force --options runtime --sign "$SIGN_ID" "$APP/Contents/Helpers/closeup-mcp"
 codesign --force --options runtime --entitlements Closeup.entitlements --sign "$SIGN_ID" "$APP"
 codesign --verify --deep --verbose=1 "$APP" 2>&1 | sed 's/^/    /'
 

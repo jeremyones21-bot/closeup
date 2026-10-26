@@ -9,7 +9,9 @@ import Foundation
 @main
 struct CloseupMCP {
     @MainActor static func main() async {
-        _ = NSApplication.shared   // AppKit (cursor images, fonts) needs an app object
+        // AppKit (cursor images, fonts) needs an app object. This binary lives inside Closeup.app,
+        // so without .prohibited macOS shows it in the Dock as a second Closeup.
+        NSApplication.shared.setActivationPolicy(.prohibited)
         // Read Closeup's own settings (save folder, auto-zoom, default style), not this tool's.
         UserDefaults.standard.addSuite(named: "com.jeremyjones.closeup")
         let server = Server()
@@ -159,14 +161,18 @@ enum Tools {
             try openURL("closeup://record?" + q.joined(separator: "&"))
             for _ in 0..<150 {   // countdown is 3 s; allow for the app launching
                 try await Task.sleep(for: .milliseconds(100))
-                if let new = ProjectFolder.allIncludingUnfinished().first(where: { !before.contains($0.url) }) {
+                if let new = ProjectFolder.allIncludingUnfinished().first(where: { !before.contains($0.url) }),
+                   FileManager.default.fileExists(atPath: new.video.path) {
                     return text("Recording started: \(new.url.path). Call stop_recording when done.")
                 }
             }
             throw ToolError(message: "Closeup didn't start recording within 15 s. Check that Closeup has Screen Recording permission (System Settings › Privacy & Security) and isn't already recording.")
 
         case "stop_recording":
-            guard let current = ProjectFolder.allIncludingUnfinished().first else { throw ToolError(message: "No recording found.") }
+            // The take being recorded is the one without a cursor.json yet.
+            guard let current = ProjectFolder.allIncludingUnfinished().first(where: {
+                !FileManager.default.fileExists(atPath: $0.cursorFile.path)
+            }) else { throw ToolError(message: "Closeup isn't recording.") }
             try openURL("closeup://stop")
             for _ in 0..<600 {
                 try await Task.sleep(for: .milliseconds(100))
@@ -422,6 +428,9 @@ extension ProjectFolder {
     /// Like all(), but includes a take still being recorded (no cursor.json yet).
     static func allIncludingUnfinished() -> [ProjectFolder] {
         let urls = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.creationDateKey])) ?? []
-        return urls.filter { $0.pathExtension == "closeup" }.map(ProjectFolder.init(url:)).sorted { $0.created > $1.created }
+        func created(_ u: URL) -> Date {
+            (try? FileManager.default.attributesOfItem(atPath: u.path)[.creationDate] as? Date) ?? .distantPast
+        }
+        return urls.filter { $0.pathExtension == "closeup" }.sorted { created($0) > created($1) }.map(ProjectFolder.init(url:))
     }
 }
